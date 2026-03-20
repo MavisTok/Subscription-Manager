@@ -4,7 +4,9 @@
 #  功能: 订阅拉取 / GitHub推送 / 消息通知 / 定时任务
 # ============================================================
 
-readonly VERSION="1.0.0"
+readonly VERSION="1.1.0"
+readonly GITHUB_RAW="https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main"
+readonly GITHUB_RAW_PROXY="https://ghfast.top/${GITHUB_RAW}"
 readonly INSTALL_DIR="/opt/sub-manager"
 readonly CONFIG_DIR="${INSTALL_DIR}/config"
 readonly DATA_DIR="${INSTALL_DIR}/data"
@@ -1013,6 +1015,133 @@ view_logs() {
 }
 
 # ══════════════════════════════════════════════════════════
+#  更新机制
+# ══════════════════════════════════════════════════════════
+
+# _ver_gt <a> <b>  →  a > b (语义版本比较)
+_ver_gt() {
+    local a="$1" b="$2"
+    [[ "$a" == "$b" ]] && return 1
+    local winner
+    winner=$(printf '%s\n%s\n' "$a" "$b" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+    [[ "$winner" == "$a" ]]
+}
+
+# _fetch_raw <path> <out_file>
+# 先试直连，失败再试加速镜像，返回 0=成功
+_fetch_raw() {
+    local path="$1" out="$2"
+    curl -fsSL --connect-timeout 10 --max-time 30 \
+        "${GITHUB_RAW}/${path}" -o "$out" 2>/dev/null && return 0
+    curl -fsSL --connect-timeout 10 --max-time 30 \
+        "${GITHUB_RAW_PROXY}/${path}" -o "$out" 2>/dev/null
+}
+
+# update_check [silent]
+# silent=true 时只在有更新时输出，用于主菜单静默检查
+update_check() {
+    local silent="${1:-false}"
+    local tmp; tmp=$(mktemp)
+
+    [[ "$silent" == "false" ]] && echo -ne "  检查更新中..."
+
+    if ! _fetch_raw "sub-manager.sh" "$tmp"; then
+        [[ "$silent" == "false" ]] && echo -e " ${R}网络不可达${NC}"
+        rm -f "$tmp"; return 1
+    fi
+
+    local remote_ver
+    remote_ver=$(grep -m1 '^readonly VERSION=' "$tmp" | cut -d'"' -f2)
+    rm -f "$tmp"
+
+    if [[ -z "$remote_ver" ]]; then
+        [[ "$silent" == "false" ]] && echo -e " ${R}无法解析远端版本${NC}"
+        return 1
+    fi
+
+    if _ver_gt "$remote_ver" "$VERSION"; then
+        echo -e " ${G}发现新版本 ${remote_ver}${NC}（当前 ${VERSION}）"
+        return 0   # 有更新
+    else
+        [[ "$silent" == "false" ]] && echo -e " ${G}已是最新版本 (${VERSION})${NC}"
+        return 1   # 无更新
+    fi
+}
+
+# update_do
+# 下载新脚本并替换，完成后重启
+update_do() {
+    clear_screen
+    print_header "更新程序"
+
+    echo -ne "  ${C}获取最新版本...${NC} "
+    local tmp; tmp=$(mktemp)
+
+    if ! _fetch_raw "sub-manager.sh" "$tmp"; then
+        echo -e "${R}下载失败${NC}"
+        press_enter; return 1
+    fi
+
+    local remote_ver
+    remote_ver=$(grep -m1 '^readonly VERSION=' "$tmp" | cut -d'"' -f2)
+    if [[ -z "$remote_ver" ]]; then
+        echo -e "${R}版本信息解析失败${NC}"
+        rm -f "$tmp"; press_enter; return 1
+    fi
+    echo -e "${G}${remote_ver}${NC}"
+
+    if ! _ver_gt "$remote_ver" "$VERSION"; then
+        echo -e "\n  ${G}当前已是最新版本 (${VERSION})，无需更新${NC}"
+        rm -f "$tmp"; press_enter; return 0
+    fi
+
+    echo -e "  本地版本: ${Y}${VERSION}${NC}  →  新版本: ${G}${remote_ver}${NC}"
+    echo ""
+
+    # 验证下载文件是有效 bash 脚本
+    if ! bash -n "$tmp" 2>/dev/null; then
+        echo -e "  ${R}✗ 下载文件语法校验失败，已中止${NC}"
+        rm -f "$tmp"; press_enter; return 1
+    fi
+
+    confirm "确认更新到 v${remote_ver}?" || { rm -f "$tmp"; echo "  已取消"; press_enter; return 0; }
+
+    # 备份当前版本
+    local bak="${INSTALL_DIR}/sub-manager.sh.bak"
+    cp "${INSTALL_DIR}/sub-manager.sh" "$bak"
+    echo -e "  ${Y}→ 已备份当前版本到 $(basename $bak)${NC}"
+
+    # 替换
+    mv "$tmp" "${INSTALL_DIR}/sub-manager.sh"
+    chmod +x "${INSTALL_DIR}/sub-manager.sh"
+
+    echo -e "\n  ${G}✓ 更新完成! 即将重启...${NC}"
+    log "INFO" "Updated: ${VERSION} -> ${remote_ver}"
+    sleep 1
+
+    # 用新版本替换当前进程
+    exec "${INSTALL_DIR}/sub-manager.sh"
+}
+
+# update_rollback
+# 回滚到备份版本
+update_rollback() {
+    local bak="${INSTALL_DIR}/sub-manager.sh.bak"
+    if [[ ! -f "$bak" ]]; then
+        echo -e "  ${R}未找到备份文件${NC}"; press_enter; return 1
+    fi
+    local bak_ver
+    bak_ver=$(grep -m1 '^readonly VERSION=' "$bak" | cut -d'"' -f2)
+    confirm "回滚到备份版本 (${bak_ver:-未知})?" || { echo "  已取消"; press_enter; return 0; }
+    cp "$bak" "${INSTALL_DIR}/sub-manager.sh"
+    chmod +x "${INSTALL_DIR}/sub-manager.sh"
+    echo -e "  ${G}✓ 已回滚，即将重启...${NC}"
+    log "INFO" "Rolled back to ${bak_ver}"
+    sleep 1
+    exec "${INSTALL_DIR}/sub-manager.sh"
+}
+
+# ══════════════════════════════════════════════════════════
 #  系统设置
 # ══════════════════════════════════════════════════════════
 
@@ -1025,29 +1154,37 @@ system_settings() {
         crontab -l 2>/dev/null | grep -qF "sub-manager.sh --cron-check" && \
             cron_status="${G}已启用${NC}"
 
-        echo -e "  版本:       ${W}${VERSION}${NC}"
+        local bak_info=""
+        [[ -f "${INSTALL_DIR}/sub-manager.sh.bak" ]] && \
+            bak_info=" (备份: $(grep -m1 '^readonly VERSION=' "${INSTALL_DIR}/sub-manager.sh.bak" | cut -d'"' -f2))"
+
+        echo -e "  版本:       ${W}${VERSION}${NC}${bak_info}"
         echo -e "  安装目录:   ${INSTALL_DIR}"
         echo -e "  定时任务:   $cron_status"
         echo ""
-        echo "  1. 启用定时任务"
-        echo "  2. 禁用定时任务"
-        echo "  3. 查看 Crontab"
+        echo "  1. 检查并更新"
+        echo "  2. 回滚到上一版本"
+        echo "  3. 启用定时任务"
+        echo "  4. 禁用定时任务"
+        echo "  5. 查看 Crontab"
         echo "  0. 返回主菜单"
         echo ""
         local choice; choice=$(read_input "请选择")
         case "$choice" in
-            1)
+            1) update_do ;;
+            2) update_rollback ;;
+            3)
                 if setup_cron; then
                     echo -e "\n  ${G}✓ 定时任务已启用 (每分钟检查)${NC}"
                 else
                     echo -e "\n  ${Y}定时任务已存在${NC}"
                 fi
                 press_enter ;;
-            2)
+            4)
                 confirm "确认禁用定时任务?" && remove_cron && \
                     echo -e "\n  ${G}✓ 定时任务已禁用${NC}"
                 press_enter ;;
-            3)
+            5)
                 echo ""; crontab -l 2>/dev/null || echo -e "  ${Y}Crontab 为空${NC}"
                 press_enter ;;
             0) return ;;
@@ -1075,6 +1212,13 @@ main_menu() {
         local enabled_cnt; enabled_cnt=$(jq '[.tasks[] | select(.enabled)] | length' "$TASKS_FILE")
 
         echo -e "  ${Y}任务: ${task_cnt} (启用 ${enabled_cnt})  |  仓库: ${repo_cnt}${NC}"
+
+        # 静默检查更新（后台，结果存入临时文件，下次刷新菜单时展示）
+        local update_flag="/tmp/sub-manager-update-available"
+        if [[ -f "$update_flag" ]]; then
+            local new_ver; new_ver=$(cat "$update_flag" 2>/dev/null)
+            echo -e "  ${G}★ 发现新版本 ${new_ver}，前往「系统设置」→「检查并更新」${NC}"
+        fi
         echo ""
         echo -e "  ${W}1.${NC} 拉取任务管理"
         echo -e "  ${W}2.${NC} GitHub 仓库配置"
@@ -1123,6 +1267,12 @@ case "${1:-}" in
         [[ -z "${2:-}" ]] && { echo "用法: $0 --run-task <task_id>"; exit 1; }
         run_task "$2" "true"
         ;;
+    --update)
+        update_do
+        ;;
+    --check-update)
+        update_check "false"
+        ;;
     --status)
         echo "Sub Manager v${VERSION}"
         echo "Tasks: $(jq '.tasks | length' "$TASKS_FILE") (enabled: $(jq '[.tasks[]|select(.enabled)]|length' "$TASKS_FILE"))"
@@ -1130,13 +1280,29 @@ case "${1:-}" in
         ;;
     --help|-h)
         echo "用法: $0 [选项]"
-        echo "  (无参数)        打开交互界面"
-        echo "  --cron-check    检查并执行到期任务 (由 cron 调用)"
-        echo "  --run-task <id> 立即执行指定任务"
-        echo "  --status        显示状态摘要"
+        echo "  (无参数)          打开交互界面"
+        echo "  --cron-check      检查并执行到期任务 (由 cron 调用)"
+        echo "  --run-task <id>   立即执行指定任务"
+        echo "  --update          直接执行更新"
+        echo "  --check-update    检查是否有新版本"
+        echo "  --status          显示状态摘要"
         ;;
     *)
         if [[ -t 0 ]]; then
+            # 后台静默检查更新（不阻塞启动）
+            (
+                local flag="/tmp/sub-manager-update-available"
+                local tmp; tmp=$(mktemp)
+                if _fetch_raw "sub-manager.sh" "$tmp" 2>/dev/null; then
+                    local rv; rv=$(grep -m1 '^readonly VERSION=' "$tmp" | cut -d'"' -f2)
+                    if [[ -n "$rv" ]] && _ver_gt "$rv" "$VERSION"; then
+                        echo "$rv" > "$flag"
+                    else
+                        rm -f "$flag"
+                    fi
+                fi
+                rm -f "$tmp"
+            ) &>/dev/null &
             main_menu
         else
             echo "非交互模式下请使用参数，运行 $0 --help 查看帮助"

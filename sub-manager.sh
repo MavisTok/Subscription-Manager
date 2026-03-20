@@ -120,7 +120,7 @@ task_add() {
     clear_screen
     print_header "添加拉取任务"
 
-    local name url interval notes
+    local name url interval notes ua
     name=$(read_input "任务名称")
     [[ -z "$name" ]] && { echo -e "  ${R}名称不能为空${NC}"; press_enter; return; }
 
@@ -133,15 +133,18 @@ task_add() {
     fi
 
     notes=$(read_input "备注 (可选)")
+    echo -e "  ${Y}自定义 User-Agent (留空=自动轮换常见客户端UA)${NC}"
+    echo -e "  ${C}常见值: clash.meta / ClashForAndroid / v2rayN / Quantumult X${NC}"
+    ua=$(read_input "User-Agent (可选)")
 
     local id; id=$(jq '.next_id' "$TASKS_FILE")
     local tmp; tmp=$(mktemp)
     jq --argjson id "$id" \
        --arg name "$name" --arg url "$url" \
-       --argjson interval "$interval" --arg notes "$notes" \
+       --argjson interval "$interval" --arg notes "$notes" --arg ua "$ua" \
        '.tasks += [{
            "id": $id, "name": $name, "url": $url,
-           "interval": $interval, "notes": $notes,
+           "interval": $interval, "notes": $notes, "ua": $ua,
            "enabled": true, "last_run": 0
        }] | .next_id += 1' "$TASKS_FILE" > "$tmp" && mv "$tmp" "$TASKS_FILE"
 
@@ -160,18 +163,21 @@ task_edit() {
         echo -e "  ${R}未找到 ID=$id 的任务${NC}"; press_enter; return
     fi
 
-    local cur_name cur_url cur_interval cur_notes
+    local cur_name cur_url cur_interval cur_notes cur_ua
     cur_name=$(echo "$task" | jq -r '.name')
     cur_url=$(echo "$task" | jq -r '.url')
     cur_interval=$(echo "$task" | jq -r '.interval')
     cur_notes=$(echo "$task" | jq -r '.notes')
+    cur_ua=$(echo "$task" | jq -r '.ua // ""')
 
     echo -e "  ${C}当前配置 (直接回车保留原值):${NC}"
-    local new_name new_url new_interval new_notes
+    local new_name new_url new_interval new_notes new_ua
     new_name=$(read_input "名称" "$cur_name")
     new_url=$(read_input "URL" "$cur_url")
     new_interval=$(read_input "间隔(分钟)" "$cur_interval")
     new_notes=$(read_input "备注" "$cur_notes")
+    echo -e "  ${Y}留空=自动轮换UA / 常见值: clash.meta ClashForAndroid v2rayN${NC}"
+    new_ua=$(read_input "User-Agent" "$cur_ua")
 
     if ! [[ "$new_interval" =~ ^[0-9]+$ ]] || [[ "$new_interval" -lt 1 ]]; then
         echo -e "  ${R}间隔必须为正整数${NC}"; press_enter; return
@@ -180,9 +186,9 @@ task_edit() {
     local tmp; tmp=$(mktemp)
     jq --argjson id "$id" \
        --arg name "$new_name" --arg url "$new_url" \
-       --argjson interval "$new_interval" --arg notes "$new_notes" \
+       --argjson interval "$new_interval" --arg notes "$new_notes" --arg ua "$new_ua" \
        '(.tasks[] | select(.id==$id)) |= . + {
-           "name":$name,"url":$url,"interval":$interval,"notes":$notes
+           "name":$name,"url":$url,"interval":$interval,"notes":$notes,"ua":$ua
        }' "$TASKS_FILE" > "$tmp" && mv "$tmp" "$TASKS_FILE"
 
     echo -e "\n  ${G}✓ 任务已更新${NC}"
@@ -686,6 +692,30 @@ send_notification() {
 #  核心执行: 拉取订阅
 # ══════════════════════════════════════════════════════════
 
+# 订阅拉取常用 User-Agent 列表（遇到 403/407 时自动轮换）
+FETCH_UA_LIST=(
+    "clash.meta"
+    "ClashForAndroid/2.5.12"
+    "ClashX/1.95.1"
+    "v2rayN/6.23"
+    "Quantumult%2FX"
+    "Surge/5.8.0"
+    "sing-box/1.8.0"
+    "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36"
+)
+
+# _do_fetch <url> <ua> <out_file>
+# 单次 curl 请求，返回 http_code
+_do_fetch() {
+    local url="$1" ua="$2" out="$3"
+    curl -s -o "$out" -w "%{http_code}" \
+        --connect-timeout 15 --max-time 60 \
+        -L --compressed \
+        -H "Accept: */*" \
+        -A "$ua" \
+        "$url" 2>/dev/null
+}
+
 # fetch_task <task_id> <verbose=false>
 # Returns 0 on success
 fetch_task() {
@@ -696,20 +726,50 @@ fetch_task() {
         log "ERROR" "fetch_task: task $task_id not found"; return 1
     fi
 
-    local name url
+    local name url custom_ua
     name=$(echo "$task" | jq -r '.name')
     url=$(echo "$task" | jq -r '.url')
+    custom_ua=$(echo "$task" | jq -r '.ua // ""')
     local output_file="${DATA_DIR}/task_${task_id}.txt"
 
     [[ "$verbose" == "true" ]] && echo -e "  ${C}拉取 \"$name\"...${NC}"
     log "INFO" "Fetching task $task_id: $name"
 
+    # 若任务设置了自定义 UA，只用它；否则用轮换列表
+    local -a ua_candidates=()
+    if [[ -n "$custom_ua" ]]; then
+        ua_candidates=("$custom_ua")
+    else
+        ua_candidates=("${FETCH_UA_LIST[@]}")
+    fi
+
     local tmp_file; tmp_file=$(mktemp)
-    local http_code
-    http_code=$(curl -s -o "$tmp_file" -w "%{http_code}" \
-        --connect-timeout 15 --max-time 60 \
-        -L -A "Mozilla/5.0 SubManager/${VERSION}" \
-        "$url" 2>/dev/null)
+    local http_code="" used_ua="" attempt=0
+
+    for ua in "${ua_candidates[@]}"; do
+        attempt=$(( attempt + 1 ))
+        http_code=$(_do_fetch "$url" "$ua" "$tmp_file")
+
+        # 2xx = 成功
+        if [[ "$http_code" =~ ^2 ]]; then
+            used_ua="$ua"
+            break
+        fi
+
+        # 非 403/407 不是 UA 问题，不继续尝试
+        if [[ "$http_code" != "403" && "$http_code" != "407" && "$http_code" != "000" ]]; then
+            [[ "$verbose" == "true" ]] && \
+                echo -e "  ${R}✗ 拉取失败 (HTTP $http_code，非UA问题)${NC}"
+            log "ERROR" "Fetch failed: task=$task_id http=$http_code ua=$ua"
+            rm -f "$tmp_file"
+            return 1
+        fi
+
+        [[ "$verbose" == "true" ]] && \
+            echo -e "  ${Y}  [${attempt}/${#ua_candidates[@]}] HTTP $http_code，切换UA重试...${NC}"
+        log "WARN" "Fetch 403/407: task=$task_id attempt=$attempt ua=$ua"
+        : > "$tmp_file"   # 清空临时文件
+    done
 
     local ret=1
     if [[ "$http_code" =~ ^2 ]]; then
@@ -721,16 +781,20 @@ fetch_task() {
             jq --argjson id "$task_id" --argjson ts "$now" \
                '(.tasks[] | select(.id==$id)) |= . + {"last_run":$ts}' \
                "$TASKS_FILE" > "$tmpj" && mv "$tmpj" "$TASKS_FILE"
-            [[ "$verbose" == "true" ]] && echo -e "  ${G}✓ 拉取成功 ($size 字节)${NC}"
-            log "INFO" "Fetch OK: task=$task_id size=${size}B"
+            [[ "$verbose" == "true" ]] && \
+                echo -e "  ${G}✓ 拉取成功 ($size 字节) [UA: $used_ua]${NC}"
+            log "INFO" "Fetch OK: task=$task_id size=${size}B ua=$used_ua"
             ret=0
         else
             [[ "$verbose" == "true" ]] && echo -e "  ${R}✗ 响应内容为空${NC}"
             log "WARN" "Fetch empty: task=$task_id"
         fi
     else
-        [[ "$verbose" == "true" ]] && echo -e "  ${R}✗ 拉取失败 (HTTP $http_code)${NC}"
-        log "ERROR" "Fetch failed: task=$task_id http=$http_code"
+        [[ "$verbose" == "true" ]] && \
+            echo -e "  ${R}✗ 全部 UA 均被拒绝 (最终 HTTP $http_code)${NC}"
+        [[ "$verbose" == "true" ]] && \
+            echo -e "  ${Y}  提示: 可在编辑任务中手动指定 User-Agent${NC}"
+        log "ERROR" "Fetch failed all UA: task=$task_id http=$http_code"
     fi
 
     rm -f "$tmp_file"

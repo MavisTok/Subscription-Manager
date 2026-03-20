@@ -533,34 +533,48 @@ echo ""
 echo -e "  ${W}[3/5] 安装主程序...${NC}"
 
 GITHUB_RAW="https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main"
+GITHUB_RAW_PROXY="https://ghfast.top/https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main"
 SCRIPT_SRC=""
-SCRIPT_DIR_REAL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if [[ -f "${SCRIPT_DIR_REAL}/${SCRIPT_NAME}" ]]; then
-    # 本地目录已有文件（手动下载场景）
-    SCRIPT_SRC="${SCRIPT_DIR_REAL}/${SCRIPT_NAME}"
-elif [[ -f "./${SCRIPT_NAME}" ]]; then
+# 检测是否通过 bash <(curl ...) 管道方式运行
+# 管道方式时 BASH_SOURCE[0] 形如 /dev/fd/63 或 /proc/self/fd/63，路径不可信
+_is_pipe_run=false
+if [[ "${BASH_SOURCE[0]}" == /dev/fd/* ]] || \
+   [[ "${BASH_SOURCE[0]}" == /proc/*/fd/* ]] || \
+   [[ "${BASH_SOURCE[0]}" == "bash" ]] || \
+   [[ "${BASH_SOURCE[0]}" == "/dev/stdin" ]]; then
+    _is_pipe_run=true
+fi
+
+if [[ "$_is_pipe_run" == "false" ]]; then
+    SCRIPT_DIR_REAL="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || true
+    if [[ -f "${SCRIPT_DIR_REAL}/${SCRIPT_NAME}" ]]; then
+        SCRIPT_SRC="${SCRIPT_DIR_REAL}/${SCRIPT_NAME}"
+    fi
+fi
+
+if [[ -z "$SCRIPT_SRC" ]] && [[ -f "./${SCRIPT_NAME}" ]]; then
     SCRIPT_SRC="./${SCRIPT_NAME}"
-else
-    # 本地找不到，从 GitHub 自动下载
-    echo -ne "  ${Y}本地未找到 ${SCRIPT_NAME}，从 GitHub 下载...${NC} "
-    if curl -fsSL --connect-timeout 15 --max-time 60 \
+fi
+
+if [[ -z "$SCRIPT_SRC" ]]; then
+    # 从网络下载，先试直连，失败再走镜像
+    echo -ne "  ${Y}下载 ${SCRIPT_NAME}...${NC} "
+    if curl -fsSL --connect-timeout 8 --max-time 30 \
         "${GITHUB_RAW}/${SCRIPT_NAME}" -o "/tmp/${SCRIPT_NAME}" 2>/dev/null; then
         SCRIPT_SRC="/tmp/${SCRIPT_NAME}"
-        echo -e "${G}✓${NC}"
+        echo -e "${G}✓ (直连)${NC}"
     else
-        echo -e "${R}✗${NC}"
-        # GitHub 下载失败，尝试通过 ghproxy 加速
-        echo -ne "  ${Y}尝试镜像加速下载...${NC} "
-        if curl -fsSL --connect-timeout 15 --max-time 60 \
-            "https://ghfast.top/${GITHUB_RAW}/${SCRIPT_NAME}" \
+        echo -ne "${Y}直连失败，切换镜像...${NC} "
+        if curl -fsSL --connect-timeout 8 --max-time 30 \
+            "${GITHUB_RAW_PROXY}/${SCRIPT_NAME}" \
             -o "/tmp/${SCRIPT_NAME}" 2>/dev/null; then
             SCRIPT_SRC="/tmp/${SCRIPT_NAME}"
-            echo -e "${G}✓${NC}"
+            echo -e "${G}✓ (镜像)${NC}"
         else
             echo -e "${R}✗${NC}"
-            echo -e "  ${R}自动下载失败，请手动下载后重试:${NC}"
-            echo -e "  ${C}curl -fsSL ${GITHUB_RAW}/${SCRIPT_NAME} -o ${SCRIPT_NAME}${NC}"
+            echo -e "  ${R}下载失败，请手动执行:${NC}"
+            echo -e "  ${C}curl -fsSL ${GITHUB_RAW_PROXY}/${SCRIPT_NAME} -o ${SCRIPT_NAME} && bash install.sh${NC}"
             exit 1
         fi
     fi

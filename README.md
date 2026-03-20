@@ -4,64 +4,38 @@
 
 ---
 
-## 文件结构
+## 一键安装
 
-```text
-/opt/sub-manager/          # 安装目录
-├── sub-manager.sh         # 主程序
-├── config/
-│   ├── tasks.json         # 拉取任务配置
-│   ├── repos.json         # GitHub 仓库配置
-│   └── notify.json        # 消息推送配置
-├── data/
-│   └── task_<id>.txt      # 本地订阅文件
-└── logs/
-    ├── main.log
-    ├── error.log
-    └── cron.log
+**国际网络（直连 GitHub）：**
+
+```bash
+bash <(curl -fsSL --connect-timeout 8 --max-time 30 https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/install.sh)
+```
+
+**国内服务器（推荐，走加速镜像）：**
+
+```bash
+bash <(curl -fsSL --connect-timeout 8 --max-time 30 https://ghfast.top/https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/install.sh)
+```
+
+> 脚本自动下载所有文件、安装依赖、配置定时任务。
+> 依赖安装失败时自动切换阿里云 / 清华 / 中科大等镜像重试。
+> `sub-manager.sh` 找不到时也会自动下载，无需手动上传。
+
+`curl` 不可用时用 `wget`：
+
+```bash
+bash <(wget -qO- https://ghfast.top/https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/install.sh)
 ```
 
 ---
 
-## 快速部署
-
-### 一键安装（推荐）
+## 启动方式
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/install.sh)
-```
-
-> 脚本会自动下载所有文件、安装依赖、配置定时任务。
-> 依赖安装失败时自动切换阿里云 / 清华 / 中科大等镜像重试。
-
-如果服务器没有安装 `curl`，也可以用 `wget`：
-
-```bash
-bash <(wget -qO- https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/install.sh)
-```
-
-### 手动安装
-
-```bash
-# 下载脚本
-curl -fsSL https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/install.sh -o install.sh
-curl -fsSL https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/sub-manager.sh -o sub-manager.sh
-
-# 执行安装
-sudo bash install.sh
-```
-
-安装完成后启动：
-
-```bash
-# 方式一：直接运行
-bash /opt/sub-manager/sub-manager.sh
-
-# 方式二：全局别名（重新登录后生效）
-subm
-
-# 方式三：若安装时选择了 su 重定向
-su
+bash /opt/sub-manager/sub-manager.sh   # 直接运行
+subm                                    # 全局别名（重新登录后生效）
+su                                      # 安装时选择了 su 重定向后可用
 ```
 
 ---
@@ -72,13 +46,23 @@ su
 
 | 功能 | 说明 |
 | ---- | ---- |
-| 添加任务 | 保存订阅链接、名称、拉取间隔(分钟)、备注 |
-| 编辑任务 | 修改 URL、名称、间隔、备注 |
+| 添加任务 | 保存订阅链接、名称、拉取间隔(分钟)、备注、自定义 User-Agent |
+| 编辑任务 | 修改 URL、名称、间隔、备注、User-Agent |
 | 启用/禁用 | 不删除任务的情况下暂停调度 |
 | 导出配置 | 导出为 JSON 文件，便于迁移备份 |
 | 导入配置 | 支持合并（追加）或替换两种模式 |
 
 本地文件保存路径：`/opt/sub-manager/data/task_<id>.txt`
+
+#### User-Agent 自动轮换
+
+添加任务时可留空 User-Agent，拉取遇到 `403` 时自动依次尝试：
+
+```text
+clash.meta → ClashForAndroid → ClashX → v2rayN → Quantumult X → Surge → sing-box → ...
+```
+
+也可手动指定固定 UA（如 `clash.meta`），只使用该值不轮换。
 
 ### 2. GitHub 推送
 
@@ -105,11 +89,35 @@ GitHub Token 需要 `repo` 权限，在 GitHub → Settings → Developer settin
 - 按每个任务独立设置的间隔判断是否到期执行
 - 可通过菜单「系统设置」随时启用或禁用
 
+### 5. 更新机制
+
+主菜单启动时后台静默检测，有新版本时顶部显示提示：
+
+```text
+★ 发现新版本 1.2.0，前往「系统设置」→「检查并更新」
+```
+
+「系统设置」中可执行：
+
+| 操作 | 说明 |
+| ---- | ---- |
+| 检查并更新 | 对比版本 → 下载 → 语法校验 → 备份旧版 → 替换 → 自动重启 |
+| 回滚到上一版本 | 用备份文件还原，适合更新出问题时使用 |
+
+直连 GitHub 失败自动切换 `ghfast.top` 加速镜像。替换前自动备份为 `sub-manager.sh.bak`。
+
+CLI 直接更新（无需进菜单）：
+
+```bash
+sub-manager.sh --update          # 直接执行更新
+sub-manager.sh --check-update    # 只检查是否有新版本
+```
+
 ---
 
 ## 系统兼容性
 
-安装脚本自动检测发行版并使用对应包管理器安装依赖：
+安装脚本自动检测发行版并使用对应包管理器安装依赖，失败时自动切换镜像重试：
 
 | 发行版 | 包管理器 |
 | ------ | -------- |
@@ -120,7 +128,27 @@ GitHub Token 需要 `repo` 权限，在 GitHub → Settings → Developer settin
 | Arch / Manjaro | pacman |
 | openSUSE | zypper |
 
-依赖：`curl` `git` `jq`（安装脚本自动安装）
+依赖：`curl` `git` `jq`（安装脚本自动安装，支持阿里云 / 清华 / 中科大 / 华为云镜像回退）
+
+---
+
+## 文件结构
+
+```text
+/opt/sub-manager/
+├── sub-manager.sh         # 主程序
+├── sub-manager.sh.bak     # 更新前的备份（自动生成）
+├── config/
+│   ├── tasks.json         # 拉取任务配置
+│   ├── repos.json         # GitHub 仓库配置
+│   └── notify.json        # 消息推送配置
+├── data/
+│   └── task_<id>.txt      # 本地订阅文件
+└── logs/
+    ├── main.log
+    ├── error.log
+    └── cron.log
+```
 
 ---
 
@@ -142,5 +170,7 @@ su -        # 同上
 sub-manager.sh                  # 打开交互界面
 sub-manager.sh --cron-check     # 检查并执行到期任务（由 cron 调用）
 sub-manager.sh --run-task <id>  # 立即执行指定任务
+sub-manager.sh --update         # 直接执行更新
+sub-manager.sh --check-update   # 检查是否有新版本
 sub-manager.sh --status         # 显示状态摘要
 ```

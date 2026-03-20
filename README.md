@@ -25,9 +25,29 @@
 
 ## 快速部署
 
-将 `install.sh` 和 `sub-manager.sh` 上传到服务器同一目录，执行：
+### 一键安装（推荐）
 
 ```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/install.sh)
+```
+
+> 脚本会自动下载所有文件、安装依赖、配置定时任务。
+> 依赖安装失败时自动切换阿里云 / 清华 / 中科大等镜像重试。
+
+如果服务器没有安装 `curl`，也可以用 `wget`：
+
+```bash
+bash <(wget -qO- https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/install.sh)
+```
+
+### 手动安装
+
+```bash
+# 下载脚本
+curl -fsSL https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/sub-manager.sh -o sub-manager.sh
+
+# 执行安装
 sudo bash install.sh
 ```
 

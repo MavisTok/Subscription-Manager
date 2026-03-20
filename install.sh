@@ -532,16 +532,38 @@ echo -e "  ${G}✓ ${INSTALL_DIR}/${NC}"
 echo ""
 echo -e "  ${W}[3/5] 安装主程序...${NC}"
 
+GITHUB_RAW="https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main"
 SCRIPT_SRC=""
 SCRIPT_DIR_REAL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 if [[ -f "${SCRIPT_DIR_REAL}/${SCRIPT_NAME}" ]]; then
+    # 本地目录已有文件（手动下载场景）
     SCRIPT_SRC="${SCRIPT_DIR_REAL}/${SCRIPT_NAME}"
 elif [[ -f "./${SCRIPT_NAME}" ]]; then
     SCRIPT_SRC="./${SCRIPT_NAME}"
 else
-    echo -e "  ${R}✗ 未找到 ${SCRIPT_NAME}${NC}"
-    echo -e "  ${Y}请确保 install.sh 和 sub-manager.sh 在同一目录${NC}"
-    exit 1
+    # 本地找不到，从 GitHub 自动下载
+    echo -ne "  ${Y}本地未找到 ${SCRIPT_NAME}，从 GitHub 下载...${NC} "
+    if curl -fsSL --connect-timeout 15 --max-time 60 \
+        "${GITHUB_RAW}/${SCRIPT_NAME}" -o "/tmp/${SCRIPT_NAME}" 2>/dev/null; then
+        SCRIPT_SRC="/tmp/${SCRIPT_NAME}"
+        echo -e "${G}✓${NC}"
+    else
+        echo -e "${R}✗${NC}"
+        # GitHub 下载失败，尝试通过 ghproxy 加速
+        echo -ne "  ${Y}尝试镜像加速下载...${NC} "
+        if curl -fsSL --connect-timeout 15 --max-time 60 \
+            "https://ghfast.top/${GITHUB_RAW}/${SCRIPT_NAME}" \
+            -o "/tmp/${SCRIPT_NAME}" 2>/dev/null; then
+            SCRIPT_SRC="/tmp/${SCRIPT_NAME}"
+            echo -e "${G}✓${NC}"
+        else
+            echo -e "${R}✗${NC}"
+            echo -e "  ${R}自动下载失败，请手动下载后重试:${NC}"
+            echo -e "  ${C}curl -fsSL ${GITHUB_RAW}/${SCRIPT_NAME} -o ${SCRIPT_NAME}${NC}"
+            exit 1
+        fi
+    fi
 fi
 
 cp "$SCRIPT_SRC" "${INSTALL_DIR}/${SCRIPT_NAME}"

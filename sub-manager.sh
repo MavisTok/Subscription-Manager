@@ -138,15 +138,19 @@ task_add() {
     echo -e "  ${Y}自定义 User-Agent (留空=自动轮换常见客户端UA)${NC}"
     echo -e "  ${C}常见值: clash.meta / ClashForAndroid / v2rayN / Quantumult X${NC}"
     ua=$(read_input "User-Agent (可选)")
+    echo -e "  ${Y}自定义请求头 (留空=不附加，格式: Header1:Value1|Header2:Value2)${NC}"
+    echo -e "  ${C}示例: Authorization:Bearer token123|Cookie:session=abc${NC}"
+    headers=$(read_input "自定义请求头 (可选)")
 
     local id; id=$(jq '.next_id' "$TASKS_FILE")
     local tmp; tmp=$(mktemp)
     jq --argjson id "$id" \
        --arg name "$name" --arg url "$url" \
-       --argjson interval "$interval" --arg notes "$notes" --arg ua "$ua" \
+       --argjson interval "$interval" --arg notes "$notes" \
+       --arg ua "$ua" --arg headers "$headers" \
        '.tasks += [{
            "id": $id, "name": $name, "url": $url,
-           "interval": $interval, "notes": $notes, "ua": $ua,
+           "interval": $interval, "notes": $notes, "ua": $ua, "headers": $headers,
            "enabled": true, "last_run": 0
        }] | .next_id += 1' "$TASKS_FILE" > "$tmp" && mv "$tmp" "$TASKS_FILE"
 
@@ -165,21 +169,24 @@ task_edit() {
         echo -e "  ${R}未找到 ID=$id 的任务${NC}"; press_enter; return
     fi
 
-    local cur_name cur_url cur_interval cur_notes cur_ua
+    local cur_name cur_url cur_interval cur_notes cur_ua cur_headers
     cur_name=$(echo "$task" | jq -r '.name')
     cur_url=$(echo "$task" | jq -r '.url')
     cur_interval=$(echo "$task" | jq -r '.interval')
     cur_notes=$(echo "$task" | jq -r '.notes')
     cur_ua=$(echo "$task" | jq -r '.ua // ""')
+    cur_headers=$(echo "$task" | jq -r '.headers // ""')
 
     echo -e "  ${C}当前配置 (直接回车保留原值):${NC}"
-    local new_name new_url new_interval new_notes new_ua
+    local new_name new_url new_interval new_notes new_ua new_headers
     new_name=$(read_input "名称" "$cur_name")
     new_url=$(read_input "URL" "$cur_url")
     new_interval=$(read_input "间隔(分钟)" "$cur_interval")
     new_notes=$(read_input "备注" "$cur_notes")
     echo -e "  ${Y}留空=自动轮换UA / 常见值: clash.meta ClashForAndroid v2rayN${NC}"
     new_ua=$(read_input "User-Agent" "$cur_ua")
+    echo -e "  ${Y}格式: Header1:Value1|Header2:Value2  (留空=不附加)${NC}"
+    new_headers=$(read_input "自定义请求头" "$cur_headers")
 
     if ! [[ "$new_interval" =~ ^[0-9]+$ ]] || [[ "$new_interval" -lt 1 ]]; then
         echo -e "  ${R}间隔必须为正整数${NC}"; press_enter; return
@@ -188,9 +195,11 @@ task_edit() {
     local tmp; tmp=$(mktemp)
     jq --argjson id "$id" \
        --arg name "$new_name" --arg url "$new_url" \
-       --argjson interval "$new_interval" --arg notes "$new_notes" --arg ua "$new_ua" \
+       --argjson interval "$new_interval" --arg notes "$new_notes" \
+       --arg ua "$new_ua" --arg headers "$new_headers" \
        '(.tasks[] | select(.id==$id)) |= . + {
-           "name":$name,"url":$url,"interval":$interval,"notes":$notes,"ua":$ua
+           "name":$name,"url":$url,"interval":$interval,"notes":$notes,
+           "ua":$ua,"headers":$headers
        }' "$TASKS_FILE" > "$tmp" && mv "$tmp" "$TASKS_FILE"
 
     echo -e "\n  ${G}✓ 任务已更新${NC}"
@@ -706,16 +715,30 @@ FETCH_UA_LIST=(
     "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36"
 )
 
-# _do_fetch <url> <ua> <out_file>
-# 单次 curl 请求，返回 http_code
+# _do_fetch <url> <ua> <extra_headers> <insecure> <out_file>
+# extra_headers 格式: "Header1:Value1|Header2:Value2"
+# 返回 http_code
 _do_fetch() {
-    local url="$1" ua="$2" out="$3"
-    curl -s -o "$out" -w "%{http_code}" \
-        --connect-timeout 15 --max-time 60 \
-        -L --compressed \
-        -H "Accept: */*" \
-        -A "$ua" \
-        "$url" 2>/dev/null
+    local url="$1" ua="$2" extra_headers="$3" insecure="$4" out="$5"
+
+    local -a args=(
+        -s -o "$out" -w "%{http_code}"
+        --connect-timeout 15 --max-time 60
+        -L --compressed
+        -H "Accept: */*"
+        -A "$ua"
+    )
+
+    # 附加自定义请求头（以 | 分隔）
+    if [[ -n "$extra_headers" ]]; then
+        while IFS= read -r hdr; do
+            [[ -n "$hdr" ]] && args+=(-H "$hdr")
+        done < <(echo "$extra_headers" | tr '|' '\n')
+    fi
+
+    [[ "$insecure" == "true" ]] && args+=(-k)
+
+    curl "${args[@]}" "$url" 2>/dev/null
 }
 
 # fetch_task <task_id> <verbose=false>
@@ -728,16 +751,17 @@ fetch_task() {
         log "ERROR" "fetch_task: task $task_id not found"; return 1
     fi
 
-    local name url custom_ua
+    local name url custom_ua custom_headers
     name=$(echo "$task" | jq -r '.name')
     url=$(echo "$task" | jq -r '.url')
     custom_ua=$(echo "$task" | jq -r '.ua // ""')
+    custom_headers=$(echo "$task" | jq -r '.headers // ""')
     local output_file="${DATA_DIR}/task_${task_id}.txt"
 
     [[ "$verbose" == "true" ]] && echo -e "  ${C}拉取 \"$name\"...${NC}"
     log "INFO" "Fetching task $task_id: $name"
 
-    # 若任务设置了自定义 UA，只用它；否则用轮换列表
+    # UA 候选列表：有自定义则只用一个，否则轮换
     local -a ua_candidates=()
     if [[ -n "$custom_ua" ]]; then
         ua_candidates=("$custom_ua")
@@ -747,10 +771,11 @@ fetch_task() {
 
     local tmp_file; tmp_file=$(mktemp)
     local http_code="" used_ua="" attempt=0
+    local insecure="false"
 
     for ua in "${ua_candidates[@]}"; do
         attempt=$(( attempt + 1 ))
-        http_code=$(_do_fetch "$url" "$ua" "$tmp_file")
+        http_code=$(_do_fetch "$url" "$ua" "$custom_headers" "$insecure" "$tmp_file")
 
         # 2xx = 成功
         if [[ "$http_code" =~ ^2 ]]; then
@@ -758,10 +783,29 @@ fetch_task() {
             break
         fi
 
-        # 非 403/407 不是 UA 问题，不继续尝试
-        if [[ "$http_code" != "403" && "$http_code" != "407" && "$http_code" != "000" ]]; then
-            [[ "$verbose" == "true" ]] && \
-                echo -e "  ${R}✗ 拉取失败 (HTTP $http_code，非UA问题)${NC}"
+        # SSL 错误 (000 + 空文件) 自动加 -k 重试一次
+        if [[ "$http_code" == "000" && "$insecure" == "false" ]]; then
+            insecure="true"
+            http_code=$(_do_fetch "$url" "$ua" "$custom_headers" "$insecure" "$tmp_file")
+            if [[ "$http_code" =~ ^2 ]]; then
+                used_ua="$ua (insecure)"
+                break
+            fi
+            insecure="false"
+        fi
+
+        # 非 403/407 不是 UA 问题，直接报错不轮换
+        if [[ "$http_code" != "403" && "$http_code" != "407" ]]; then
+            if [[ "$verbose" == "true" ]]; then
+                echo -e "  ${R}✗ 拉取失败 (HTTP $http_code)${NC}"
+                # 显示响应体片段，帮助诊断
+                local body_snippet; body_snippet=$(head -c 300 "$tmp_file" 2>/dev/null | tr -d '\000' | strings | head -5)
+                if [[ -n "$body_snippet" ]]; then
+                    echo -e "  ${Y}── 服务端响应 ──${NC}"
+                    echo "$body_snippet" | sed 's/^/  /'
+                    echo -e "  ${Y}────────────────${NC}"
+                fi
+            fi
             log "ERROR" "Fetch failed: task=$task_id http=$http_code ua=$ua"
             rm -f "$tmp_file"
             return 1
@@ -769,8 +813,8 @@ fetch_task() {
 
         [[ "$verbose" == "true" ]] && \
             echo -e "  ${Y}  [${attempt}/${#ua_candidates[@]}] HTTP $http_code，切换UA重试...${NC}"
-        log "WARN" "Fetch 403/407: task=$task_id attempt=$attempt ua=$ua"
-        : > "$tmp_file"   # 清空临时文件
+        log "WARN" "Fetch 403: task=$task_id attempt=$attempt ua=$ua"
+        : > "$tmp_file"
     done
 
     local ret=1
@@ -792,10 +836,20 @@ fetch_task() {
             log "WARN" "Fetch empty: task=$task_id"
         fi
     else
-        [[ "$verbose" == "true" ]] && \
-            echo -e "  ${R}✗ 全部 UA 均被拒绝 (最终 HTTP $http_code)${NC}"
-        [[ "$verbose" == "true" ]] && \
-            echo -e "  ${Y}  提示: 可在编辑任务中手动指定 User-Agent${NC}"
+        if [[ "$verbose" == "true" ]]; then
+            echo -e "  ${R}✗ 全部 UA 均返回 403${NC}"
+            # 最后一次响应体
+            local body_snippet; body_snippet=$(head -c 300 "$tmp_file" 2>/dev/null | tr -d '\000' | strings | head -5)
+            if [[ -n "$body_snippet" ]]; then
+                echo -e "  ${Y}── 服务端最后响应 ──${NC}"
+                echo "$body_snippet" | sed 's/^/  /'
+                echo -e "  ${Y}────────────────────${NC}"
+            fi
+            echo -e "  ${Y}排查建议:${NC}"
+            echo -e "    1. 检查订阅链接是否已过期"
+            echo -e "    2. 编辑任务 → 自定义请求头 (如 Authorization:Bearer xxx)"
+            echo -e "    3. 在浏览器打开链接，用开发者工具查看请求头后填入"
+        fi
         log "ERROR" "Fetch failed all UA: task=$task_id http=$http_code"
     fi
 

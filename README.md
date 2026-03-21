@@ -64,6 +64,29 @@ clash.meta → ClashForAndroid → ClashX → v2rayN → Quantumult X → Surge 
 
 也可手动指定固定 UA（如 `clash.meta`），只使用该值不轮换。
 
+#### 自定义请求头
+
+订阅链接需要 Token 或 Cookie 时，可在添加/编辑任务中设置（`|` 分隔多个）：
+
+```text
+Authorization:Bearer xxxxxxxx|Cookie:session=abc
+```
+
+#### 403 诊断
+
+全部 UA 均失败时，程序会自动打印服务端响应体片段并给出排查建议：
+
+```text
+✗ 全部 UA 均返回 403
+── 服务端最后响应 ──
+  {"code":403,"msg":"IP not allowed"}
+────────────────────
+排查建议:
+  1. 检查订阅链接是否已过期
+  2. 编辑任务 → 自定义请求头 (如 Authorization:Bearer xxx)
+  3. 在浏览器打开链接，用开发者工具查看请求头后填入
+```
+
 ### 2. GitHub 推送
 
 - 配置多个仓库，每个仓库可关联多个拉取任务

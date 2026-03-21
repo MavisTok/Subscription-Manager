@@ -6,27 +6,34 @@
 
 ## 一键安装
 
-**国际网络（直连 GitHub）：**
-
-```bash
-bash <(curl -fsSL --connect-timeout 8 --max-time 30 https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/install.sh)
-```
-
-**国内服务器（推荐，走加速镜像）：**
+**Linux 服务器 / WSL（国内推荐走镜像）：**
 
 ```bash
 bash <(curl -fsSL --connect-timeout 8 --max-time 30 https://ghfast.top/https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/install.sh)
 ```
 
-> 脚本自动下载所有文件、安装依赖、配置定时任务。
-> 依赖安装失败时自动切换阿里云 / 清华 / 中科大等镜像重试。
-> `sub-manager.sh` 找不到时也会自动下载，无需手动上传。
-
-`curl` 不可用时用 `wget`：
+**macOS：**
 
 ```bash
-bash <(wget -qO- https://ghfast.top/https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/install.sh)
+bash <(curl -fsSL --connect-timeout 8 --max-time 30 https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/install.sh)
 ```
+
+> 需要 Homebrew，安装时会自动调用 `brew install` 安装依赖。
+> 安装目录：`~/.sub-manager`（无需 sudo）
+
+**Windows（Git Bash）：**
+
+```bash
+bash <(curl -fsSL --connect-timeout 8 --max-time 30 https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/install.sh)
+```
+
+> 需要 Git Bash，`curl` / `git` / `jq` 通常已内置。
+> 安装目录：`~/.sub-manager`
+
+---
+
+> 依赖安装失败时自动切换阿里云 / 清华 / 中科大等镜像重试。
+> `sub-manager.sh` 找不到时自动从 GitHub 下载，无需手动上传。
 
 ---
 
@@ -70,6 +77,21 @@ clash.meta → ClashForAndroid → ClashX → v2rayN → Quantumult X → Surge 
 
 ```text
 Authorization:Bearer xxxxxxxx|Cookie:session=abc
+```
+
+#### 拉取代理
+
+云服务器 IP 被订阅服务商封锁时，可配置 SOCKS5/HTTP 代理转发拉取请求：
+
+- **全局代理**：主菜单 → 「4. 拉取代理配置」，对所有任务生效
+- **任务独立代理**：添加/编辑任务时设置，优先级高于全局代理
+
+支持格式：
+
+```text
+socks5://127.0.0.1:7890
+socks5://user:pass@host:port
+http://127.0.0.1:7890
 ```
 
 #### 403 诊断
@@ -140,18 +162,20 @@ sub-manager.sh --check-update    # 只检查是否有新版本
 
 ## 系统兼容性
 
-安装脚本自动检测发行版并使用对应包管理器安装依赖，失败时自动切换镜像重试：
+| 平台 | 发行版 / 环境 | 包管理器 | 安装目录 |
+| ---- | ------------- | -------- | -------- |
+| Linux (root) | Ubuntu / Debian | apt-get | `/opt/sub-manager` |
+| Linux (root) | CentOS / RHEL / Rocky / AlmaLinux | yum / dnf | `/opt/sub-manager` |
+| Linux (root) | Fedora | dnf | `/opt/sub-manager` |
+| Linux (root) | Alpine | apk | `/opt/sub-manager` |
+| Linux (root) | Arch / Manjaro | pacman | `/opt/sub-manager` |
+| Linux (non-root) | 任意 | 同上 | `~/.sub-manager` |
+| macOS | Homebrew | brew | `~/.sub-manager` |
+| Windows | Git Bash / WSL | winget / 手动 | `~/.sub-manager` |
 
-| 发行版 | 包管理器 |
-| ------ | -------- |
-| Ubuntu / Debian | apt-get |
-| CentOS / RHEL / Rocky / AlmaLinux | yum / dnf |
-| Fedora | dnf |
-| Alpine | apk |
-| Arch / Manjaro | pacman |
-| openSUSE | zypper |
+依赖：`curl` `git` `jq`（自动安装，Linux 支持阿里云 / 清华 / 中科大 / 华为云镜像回退）
 
-依赖：`curl` `git` `jq`（安装脚本自动安装，支持阿里云 / 清华 / 中科大 / 华为云镜像回退）
+**在本机（macOS/Windows）运行的优势：** 订阅服务商通常只封锁云服务器 IP，本地宽带 IP 不受影响，可绕过 403 限制。
 
 ---
 

@@ -1,23 +1,63 @@
 #!/bin/bash
 # ============================================================
-#  订阅管理工具 (Subscription Manager) v1.0.0
+#  订阅管理工具 (Subscription Manager) v1.2.0
 #  功能: 订阅拉取 / GitHub推送 / 消息通知 / 定时任务
+#  平台: Linux / macOS / Windows (Git Bash / WSL)
 # ============================================================
 
-readonly VERSION="1.1.0"
+readonly VERSION="1.2.0"
 readonly GITHUB_RAW="https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main"
 readonly GITHUB_RAW_PROXY="https://ghfast.top/${GITHUB_RAW}"
-readonly INSTALL_DIR="/opt/sub-manager"
+
+# ── OS 检测 ────────────────────────────────────────────────
+case "$(uname -s 2>/dev/null)" in
+    Darwin)         OS_TYPE="macos"   ;;
+    MINGW*|MSYS*|CYGWIN*) OS_TYPE="windows" ;;
+    *)              OS_TYPE="linux"   ;;
+esac
+readonly OS_TYPE
+
+# ── 安装目录（支持环境变量覆盖） ───────────────────────────
+if [[ -n "${SUB_MANAGER_DIR:-}" ]]; then
+    INSTALL_DIR="$SUB_MANAGER_DIR"
+elif [[ "$OS_TYPE" == "linux" && "${EUID:-$(id -u)}" -eq 0 ]]; then
+    INSTALL_DIR="/opt/sub-manager"
+else
+    # macOS / Windows / 非 root Linux 均使用 home 目录
+    INSTALL_DIR="${HOME}/.sub-manager"
+fi
+readonly INSTALL_DIR
 readonly CONFIG_DIR="${INSTALL_DIR}/config"
 readonly DATA_DIR="${INSTALL_DIR}/data"
 readonly LOG_DIR="${INSTALL_DIR}/logs"
 readonly TASKS_FILE="${CONFIG_DIR}/tasks.json"
 readonly REPOS_FILE="${CONFIG_DIR}/repos.json"
 readonly NOTIFY_FILE="${CONFIG_DIR}/notify.json"
+readonly SETTINGS_FILE="${CONFIG_DIR}/settings.json"
 
 # ── 颜色 ──────────────────────────────────────────────────
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
 B='\033[0;34m'; C='\033[0;36m'; W='\033[1;37m'; NC='\033[0m'
+
+# ── 跨平台兼容包装 ─────────────────────────────────────────
+
+# 文件大小（macOS wc -c 输出含前导空格）
+_filesize() { wc -c < "$1" | tr -d ' \t'; }
+
+# 提取响应体可打印内容（替代 strings，macOS/Windows 可能无此命令）
+_printable() { tr -cd '[:print:]\n' < "$1" | head -5; }
+
+# sed -i 跨平台（macOS BSD sed 需要 ''）
+_sed_i() {
+    if [[ "$OS_TYPE" == "macos" ]]; then
+        sed -i '' "$@"
+    else
+        sed -i "$@"
+    fi
+}
+
+# crontab 命令（Windows Git Bash 无 crontab）
+_has_cron() { command -v crontab &>/dev/null; }
 
 # ── 工具函数 ───────────────────────────────────────────────
 log() {
@@ -74,6 +114,12 @@ init_configs() {
   }
 }
 NOTIFYEOF
+    [[ -f "$SETTINGS_FILE" ]] || cat > "$SETTINGS_FILE" << 'SETTINGSEOF'
+{
+  "fetch_proxy": "",
+  "fetch_proxy_enabled": false
+}
+SETTINGSEOF
 }
 
 # ══════════════════════════════════════════════════════════
@@ -141,16 +187,20 @@ task_add() {
     echo -e "  ${Y}自定义请求头 (留空=不附加，格式: Header1:Value1|Header2:Value2)${NC}"
     echo -e "  ${C}示例: Authorization:Bearer token123|Cookie:session=abc${NC}"
     headers=$(read_input "自定义请求头 (可选)")
+    echo -e "  ${Y}任务独立代理 (留空=使用全局代理设置)${NC}"
+    echo -e "  ${C}示例: socks5://127.0.0.1:7890${NC}"
+    task_proxy=$(read_input "任务代理 (可选)")
 
     local id; id=$(jq '.next_id' "$TASKS_FILE")
     local tmp; tmp=$(mktemp)
     jq --argjson id "$id" \
        --arg name "$name" --arg url "$url" \
        --argjson interval "$interval" --arg notes "$notes" \
-       --arg ua "$ua" --arg headers "$headers" \
+       --arg ua "$ua" --arg headers "$headers" --arg proxy "$task_proxy" \
        '.tasks += [{
            "id": $id, "name": $name, "url": $url,
-           "interval": $interval, "notes": $notes, "ua": $ua, "headers": $headers,
+           "interval": $interval, "notes": $notes, "ua": $ua,
+           "headers": $headers, "proxy": $proxy,
            "enabled": true, "last_run": 0
        }] | .next_id += 1' "$TASKS_FILE" > "$tmp" && mv "$tmp" "$TASKS_FILE"
 
@@ -187,6 +237,9 @@ task_edit() {
     new_ua=$(read_input "User-Agent" "$cur_ua")
     echo -e "  ${Y}格式: Header1:Value1|Header2:Value2  (留空=不附加)${NC}"
     new_headers=$(read_input "自定义请求头" "$cur_headers")
+    local cur_proxy; cur_proxy=$(echo "$task" | jq -r '.proxy // ""')
+    echo -e "  ${Y}留空=使用全局代理 / 示例: socks5://127.0.0.1:7890${NC}"
+    new_proxy=$(read_input "任务代理" "$cur_proxy")
 
     if ! [[ "$new_interval" =~ ^[0-9]+$ ]] || [[ "$new_interval" -lt 1 ]]; then
         echo -e "  ${R}间隔必须为正整数${NC}"; press_enter; return
@@ -196,10 +249,10 @@ task_edit() {
     jq --argjson id "$id" \
        --arg name "$new_name" --arg url "$new_url" \
        --argjson interval "$new_interval" --arg notes "$new_notes" \
-       --arg ua "$new_ua" --arg headers "$new_headers" \
+       --arg ua "$new_ua" --arg headers "$new_headers" --arg proxy "$new_proxy" \
        '(.tasks[] | select(.id==$id)) |= . + {
            "name":$name,"url":$url,"interval":$interval,"notes":$notes,
-           "ua":$ua,"headers":$headers
+           "ua":$ua,"headers":$headers,"proxy":$proxy
        }' "$TASKS_FILE" > "$tmp" && mv "$tmp" "$TASKS_FILE"
 
     echo -e "\n  ${G}✓ 任务已更新${NC}"
@@ -626,6 +679,104 @@ notify_menu() {
 }
 
 # ══════════════════════════════════════════════════════════
+#  拉取代理配置
+# ══════════════════════════════════════════════════════════
+
+# 读取全局代理（供 _do_fetch 调用）
+_get_fetch_proxy() {
+    local enabled; enabled=$(jq -r '.fetch_proxy_enabled' "$SETTINGS_FILE" 2>/dev/null)
+    [[ "$enabled" != "true" ]] && echo "" && return
+    jq -r '.fetch_proxy // ""' "$SETTINGS_FILE" 2>/dev/null
+}
+
+proxy_config() {
+    clear_screen
+    print_header "拉取代理配置"
+
+    local cur_proxy cur_enabled
+    cur_proxy=$(jq -r '.fetch_proxy // ""' "$SETTINGS_FILE" 2>/dev/null)
+    cur_enabled=$(jq -r '.fetch_proxy_enabled' "$SETTINGS_FILE" 2>/dev/null)
+
+    local status_label="${R}未启用${NC}"; [[ "$cur_enabled" == "true" ]] && status_label="${G}已启用${NC}"
+    echo -e "  当前状态: $status_label"
+    [[ -n "$cur_proxy" ]] && echo -e "  当前代理: ${C}${cur_proxy}${NC}"
+    echo ""
+    echo -e "  ${Y}用于解决云服务器 IP 被订阅服务商封锁的问题${NC}"
+    echo -e "  支持格式:"
+    echo -e "    ${C}socks5://127.0.0.1:7890${NC}"
+    echo -e "    ${C}socks5://user:pass@host:port${NC}"
+    echo -e "    ${C}http://127.0.0.1:7890${NC}"
+    echo ""
+
+    local new_proxy enable_yn new_enabled
+    new_proxy=$(read_input "代理地址" "$cur_proxy")
+    read -rp "  启用拉取代理? [y/N]: " enable_yn
+    [[ "${enable_yn,,}" == "y" ]] && new_enabled="true" || new_enabled="false"
+
+    local tmp; tmp=$(mktemp)
+    jq --arg proxy "$new_proxy" --argjson enabled "$new_enabled" \
+       '.fetch_proxy = $proxy | .fetch_proxy_enabled = $enabled' \
+       "$SETTINGS_FILE" > "$tmp" && mv "$tmp" "$SETTINGS_FILE"
+
+    if [[ "$new_enabled" == "true" && -n "$new_proxy" ]]; then
+        echo -e "\n  ${G}✓ 代理已启用: $new_proxy${NC}"
+        echo -e "  ${Y}测试中...${NC}"
+        local test_code
+        test_code=$(curl -s -o /dev/null -w "%{http_code}" \
+            --connect-timeout 8 --max-time 15 \
+            --proxy "$new_proxy" \
+            "https://www.google.com" 2>/dev/null)
+        if [[ "$test_code" =~ ^[23] ]]; then
+            echo -e "  ${G}✓ 代理连通性正常 (HTTP $test_code)${NC}"
+        else
+            echo -e "  ${Y}⚠ 代理测试返回 $test_code，请确认代理地址正确且可用${NC}"
+        fi
+    else
+        echo -e "\n  ${Y}代理已禁用${NC}"
+    fi
+    press_enter
+}
+
+proxy_menu() {
+    while true; do
+        clear_screen
+        print_header "拉取代理管理"
+
+        local cur_proxy cur_enabled
+        cur_proxy=$(jq -r '.fetch_proxy // ""' "$SETTINGS_FILE" 2>/dev/null)
+        cur_enabled=$(jq -r '.fetch_proxy_enabled' "$SETTINGS_FILE" 2>/dev/null)
+        local status_label="${R}未启用${NC}"; [[ "$cur_enabled" == "true" ]] && status_label="${G}已启用${NC}"
+
+        echo -e "  全局代理: $status_label"
+        [[ -n "$cur_proxy" ]] && echo -e "  地址:     ${C}${cur_proxy}${NC}"
+        echo ""
+        echo "  1. 配置全局代理"
+        echo "  2. 测试代理连通性"
+        echo "  0. 返回主菜单"
+        echo ""
+        local choice; choice=$(read_input "请选择")
+        case "$choice" in
+            1) proxy_config ;;
+            2)
+                local proxy; proxy=$(_get_fetch_proxy)
+                if [[ -z "$proxy" ]]; then
+                    echo -e "\n  ${Y}代理未启用${NC}"; press_enter; continue
+                fi
+                echo -ne "\n  测试 $proxy ... "
+                local code
+                code=$(curl -s -o /dev/null -w "%{http_code}" \
+                    --connect-timeout 8 --max-time 15 \
+                    --proxy "$proxy" "https://www.google.com" 2>/dev/null)
+                [[ "$code" =~ ^[23] ]] && \
+                    echo -e "${G}✓ 正常 ($code)${NC}" || \
+                    echo -e "${R}✗ 失败 ($code)${NC}"
+                press_enter ;;
+            0) return ;;
+        esac
+    done
+}
+
+# ══════════════════════════════════════════════════════════
 #  核心执行: 发送通知
 # ══════════════════════════════════════════════════════════
 
@@ -715,11 +866,11 @@ FETCH_UA_LIST=(
     "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36"
 )
 
-# _do_fetch <url> <ua> <extra_headers> <insecure> <out_file>
+# _do_fetch <url> <ua> <extra_headers> <insecure> <proxy> <out_file>
 # extra_headers 格式: "Header1:Value1|Header2:Value2"
 # 返回 http_code
 _do_fetch() {
-    local url="$1" ua="$2" extra_headers="$3" insecure="$4" out="$5"
+    local url="$1" ua="$2" extra_headers="$3" insecure="$4" proxy="$5" out="$6"
 
     local -a args=(
         -s -o "$out" -w "%{http_code}"
@@ -737,6 +888,7 @@ _do_fetch() {
     fi
 
     [[ "$insecure" == "true" ]] && args+=(-k)
+    [[ -n "$proxy" ]] && args+=(--proxy "$proxy")
 
     curl "${args[@]}" "$url" 2>/dev/null
 }
@@ -751,15 +903,22 @@ fetch_task() {
         log "ERROR" "fetch_task: task $task_id not found"; return 1
     fi
 
-    local name url custom_ua custom_headers
+    local name url custom_ua custom_headers task_proxy
     name=$(echo "$task" | jq -r '.name')
     url=$(echo "$task" | jq -r '.url')
     custom_ua=$(echo "$task" | jq -r '.ua // ""')
     custom_headers=$(echo "$task" | jq -r '.headers // ""')
+    task_proxy=$(echo "$task" | jq -r '.proxy // ""')
     local output_file="${DATA_DIR}/task_${task_id}.txt"
 
+    # 代理优先级：任务独立代理 > 全局代理
+    local active_proxy="$task_proxy"
+    [[ -z "$active_proxy" ]] && active_proxy=$(_get_fetch_proxy)
+
     [[ "$verbose" == "true" ]] && echo -e "  ${C}拉取 \"$name\"...${NC}"
-    log "INFO" "Fetching task $task_id: $name"
+    [[ "$verbose" == "true" && -n "$active_proxy" ]] && \
+        echo -e "  ${Y}  使用代理: $active_proxy${NC}"
+    log "INFO" "Fetching task $task_id: $name proxy=${active_proxy:-none}"
 
     # UA 候选列表：有自定义则只用一个，否则轮换
     local -a ua_candidates=()
@@ -775,7 +934,7 @@ fetch_task() {
 
     for ua in "${ua_candidates[@]}"; do
         attempt=$(( attempt + 1 ))
-        http_code=$(_do_fetch "$url" "$ua" "$custom_headers" "$insecure" "$tmp_file")
+        http_code=$(_do_fetch "$url" "$ua" "$custom_headers" "$insecure" "$active_proxy" "$tmp_file")
 
         # 2xx = 成功
         if [[ "$http_code" =~ ^2 ]]; then
@@ -786,7 +945,7 @@ fetch_task() {
         # SSL 错误 (000 + 空文件) 自动加 -k 重试一次
         if [[ "$http_code" == "000" && "$insecure" == "false" ]]; then
             insecure="true"
-            http_code=$(_do_fetch "$url" "$ua" "$custom_headers" "$insecure" "$tmp_file")
+            http_code=$(_do_fetch "$url" "$ua" "$custom_headers" "$insecure" "$active_proxy" "$tmp_file")
             if [[ "$http_code" =~ ^2 ]]; then
                 used_ua="$ua (insecure)"
                 break
@@ -799,7 +958,7 @@ fetch_task() {
             if [[ "$verbose" == "true" ]]; then
                 echo -e "  ${R}✗ 拉取失败 (HTTP $http_code)${NC}"
                 # 显示响应体片段，帮助诊断
-                local body_snippet; body_snippet=$(head -c 300 "$tmp_file" 2>/dev/null | tr -d '\000' | strings | head -5)
+                local body_snippet; body_snippet=$(_printable < <(head -c 300 "$tmp_file" 2>/dev/null))
                 if [[ -n "$body_snippet" ]]; then
                     echo -e "  ${Y}── 服务端响应 ──${NC}"
                     echo "$body_snippet" | sed 's/^/  /'
@@ -819,7 +978,7 @@ fetch_task() {
 
     local ret=1
     if [[ "$http_code" =~ ^2 ]]; then
-        local size; size=$(wc -c < "$tmp_file")
+        local size; size=$(_filesize "$tmp_file")
         if [[ "$size" -gt 0 ]]; then
             mv "$tmp_file" "$output_file"
             local now; now=$(date +%s)
@@ -839,7 +998,7 @@ fetch_task() {
         if [[ "$verbose" == "true" ]]; then
             echo -e "  ${R}✗ 全部 UA 均返回 403${NC}"
             # 最后一次响应体
-            local body_snippet; body_snippet=$(head -c 300 "$tmp_file" 2>/dev/null | tr -d '\000' | strings | head -5)
+            local body_snippet; body_snippet=$(_printable < <(head -c 300 "$tmp_file" 2>/dev/null))
             if [[ -n "$body_snippet" ]]; then
                 echo -e "  ${Y}── 服务端最后响应 ──${NC}"
                 echo "$body_snippet" | sed 's/^/  /'
@@ -1017,6 +1176,10 @@ cron_check() {
 }
 
 setup_cron() {
+    if ! _has_cron; then
+        echo -e "  ${Y}当前平台不支持 crontab，请使用系统任务计划手动设置定时执行${NC}"
+        return 1
+    fi
     local entry="* * * * * ${INSTALL_DIR}/sub-manager.sh --cron-check >> ${LOG_DIR}/cron.log 2>&1"
     if ! crontab -l 2>/dev/null | grep -qF "sub-manager.sh --cron-check"; then
         ( crontab -l 2>/dev/null; echo "$entry" ) | crontab -
@@ -1026,6 +1189,7 @@ setup_cron() {
 }
 
 remove_cron() {
+    _has_cron || return 0
     crontab -l 2>/dev/null | grep -v "sub-manager.sh" | crontab - 2>/dev/null
 }
 
@@ -1204,9 +1368,12 @@ system_settings() {
         clear_screen
         print_header "系统设置"
 
-        local cron_status="${R}未启用${NC}"
-        crontab -l 2>/dev/null | grep -qF "sub-manager.sh --cron-check" && \
-            cron_status="${G}已启用${NC}"
+        local cron_status="${Y}不支持${NC}"
+        if _has_cron; then
+            cron_status="${R}未启用${NC}"
+            crontab -l 2>/dev/null | grep -qF "sub-manager.sh --cron-check" && \
+                cron_status="${G}已启用${NC}"
+        fi
 
         local bak_info=""
         [[ -f "${INSTALL_DIR}/sub-manager.sh.bak" ]] && \
@@ -1239,7 +1406,11 @@ system_settings() {
                     echo -e "\n  ${G}✓ 定时任务已禁用${NC}"
                 press_enter ;;
             5)
-                echo ""; crontab -l 2>/dev/null || echo -e "  ${Y}Crontab 为空${NC}"
+                if _has_cron; then
+                    echo ""; crontab -l 2>/dev/null || echo -e "  ${Y}Crontab 为空${NC}"
+                else
+                    echo -e "\n  ${Y}当前平台不支持 crontab${NC}"
+                fi
                 press_enter ;;
             0) return ;;
         esac
@@ -1277,9 +1448,10 @@ main_menu() {
         echo -e "  ${W}1.${NC} 拉取任务管理"
         echo -e "  ${W}2.${NC} GitHub 仓库配置"
         echo -e "  ${W}3.${NC} 消息推送配置"
-        echo -e "  ${W}4.${NC} 立即执行任务"
-        echo -e "  ${W}5.${NC} 查看日志"
-        echo -e "  ${W}6.${NC} 系统设置"
+        echo -e "  ${W}4.${NC} 拉取代理配置"
+        echo -e "  ${W}5.${NC} 立即执行任务"
+        echo -e "  ${W}6.${NC} 查看日志"
+        echo -e "  ${W}7.${NC} 系统设置"
         echo -e "  ${W}0.${NC} 退出"
         echo ""
 
@@ -1288,9 +1460,10 @@ main_menu() {
             1) task_menu ;;
             2) repo_menu ;;
             3) notify_menu ;;
-            4) run_task_interactive ;;
-            5) view_logs ;;
-            6) system_settings ;;
+            4) proxy_menu ;;
+            5) run_task_interactive ;;
+            6) view_logs ;;
+            7) system_settings ;;
             0) echo -e "\n  再见!\n"; exit 0 ;;
             *) echo -e "  ${R}无效选项${NC}"; sleep 1 ;;
         esac

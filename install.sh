@@ -1,15 +1,30 @@
 #!/bin/bash
 # ============================================================
 #  订阅管理工具 - 安装脚本
-#  支持: Ubuntu / Debian / CentOS / RHEL / Fedora / Rocky /
-#        AlmaLinux / Alpine / Arch / Manjaro
+#  平台: Linux (Ubuntu/Debian/CentOS/Alpine/Arch/...) /
+#        macOS / Windows (Git Bash / WSL)
 #  依赖安装失败时自动切换镜像源重试
 # ============================================================
 
 set -e
 
-INSTALL_DIR="/opt/sub-manager"
 SCRIPT_NAME="sub-manager.sh"
+
+# ── OS 检测 ────────────────────────────────────────────────
+case "$(uname -s 2>/dev/null)" in
+    Darwin)             OS_TYPE="macos"   ;;
+    MINGW*|MSYS*|CYGWIN*) OS_TYPE="windows" ;;
+    *)                  OS_TYPE="linux"   ;;
+esac
+
+# ── 安装目录 ───────────────────────────────────────────────
+if [[ -n "${SUB_MANAGER_DIR:-}" ]]; then
+    INSTALL_DIR="$SUB_MANAGER_DIR"
+elif [[ "$OS_TYPE" == "linux" && "${EUID:-$(id -u)}" -eq 0 ]]; then
+    INSTALL_DIR="/opt/sub-manager"
+else
+    INSTALL_DIR="${HOME}/.sub-manager"
+fi
 
 # ── 颜色 ──────────────────────────────────────────────────
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
@@ -21,11 +36,14 @@ echo "  ║      订 阅 管 理 工 具 - 安 装 程 序          ║"
 echo "  ║      Subscription Manager Installer           ║"
 echo "  ╚═══════════════════════════════════════════════╝"
 echo -e "${NC}"
+echo -e "  平台: ${W}${OS_TYPE}${NC}  |  安装目录: ${C}${INSTALL_DIR}${NC}"
+echo ""
 
-# ── 检查 root ─────────────────────────────────────────────
-if [[ $EUID -ne 0 ]]; then
-    echo -e "${R}  请以 root 用户运行: sudo bash install.sh${NC}"
-    exit 1
+# ── Linux root 检查（macOS/Windows 不强制） ────────────────
+if [[ "$OS_TYPE" == "linux" && "${EUID:-$(id -u)}" -ne 0 ]]; then
+    echo -e "  ${Y}提示: 非 root 用户，将安装到 ${INSTALL_DIR}${NC}"
+    echo -e "  ${Y}如需安装到 /opt/sub-manager 请用 sudo bash install.sh${NC}"
+    echo ""
 fi
 
 # ══════════════════════════════════════════════════════════
@@ -87,6 +105,10 @@ PACMAN_MIRRORS=(
 #  检测发行版
 # ══════════════════════════════════════════════════════════
 detect_distro() {
+    case "$OS_TYPE" in
+        macos)   echo "macos"; return ;;
+        windows) echo "windows"; return ;;
+    esac
     if [[ -f /etc/os-release ]]; then
         # shellcheck disable=SC1091
         . /etc/os-release
@@ -119,12 +141,12 @@ detect_distro_version() {
 # ══════════════════════════════════════════════════════════
 
 # probe_mirror <host>
-# 用 TCP 连接 443 端口快速判断镜像是否可达
+# 用 curl HEAD 请求判断镜像是否可达（兼容 macOS/Windows）
 probe_mirror() {
     local host="$1"
-    [[ -z "$host" ]] && return 0   # 空 = 官方源, 直接返回通过 (后续靠超时判断)
-    timeout "$PROBE_TIMEOUT" bash -c \
-        "echo >/dev/tcp/${host}/443" 2>/dev/null
+    [[ -z "$host" ]] && return 0   # 空 = 官方源, 直接返回通过
+    curl -s --connect-timeout "$PROBE_TIMEOUT" --max-time "$PROBE_TIMEOUT" \
+        -o /dev/null -I "https://${host}" 2>/dev/null
 }
 
 # find_reachable_mirror <mirror_array_name>
@@ -369,6 +391,15 @@ _run_install_cmd() {
             timeout "$INSTALL_TIMEOUT" pacman -S --noconfirm --needed -q "$pkg" > /dev/null 2>&1 ;;
         opensuse*|sles)
             timeout "$INSTALL_TIMEOUT" zypper install -y -q "$pkg" > /dev/null 2>&1 ;;
+        macos)
+            if command -v brew &>/dev/null; then
+                brew install -q "$pkg" > /dev/null 2>&1
+            else
+                return 1
+            fi ;;
+        windows)
+            # Git Bash: 尝试 winget，通常 jq/git/curl 已预装
+            winget install -e --id "jqlang.jq" > /dev/null 2>&1 || return 1 ;;
         *)
             return 1 ;;
     esac
@@ -676,10 +707,22 @@ echo -e "${G}  ✓ 安装完成!${NC}"
 echo -e "${G}  ═══════════════════════════════════════════════${NC}"
 echo ""
 echo -e "  ${W}启动方式:${NC}"
-echo -e "  • ${C}bash ${INSTALL_DIR}/${SCRIPT_NAME}${NC}   直接运行"
-echo -e "  • ${C}subm${NC}                              全局别名 (重新登录生效)"
-if [[ "${override_su,,}" == "y" ]]; then
-    echo -e "  • ${C}su${NC}                                无参数直接打开"
+echo -e "  • ${C}bash ${INSTALL_DIR}/${SCRIPT_NAME}${NC}"
+echo -e "  • ${C}subm${NC}   全局别名 (重新登录后生效)"
+if [[ "${override_su:-n}" == "y" ]]; then
+    echo -e "  • ${C}su${NC}     无参数直接打开"
+fi
+
+if [[ "$OS_TYPE" == "macos" ]]; then
+    echo ""
+    echo -e "  ${Y}macOS 定时拉取建议:${NC}"
+    echo -e "  使用 launchd 或直接 crontab -e 添加:"
+    echo -e "  ${C}*/60 * * * * ${INSTALL_DIR}/${SCRIPT_NAME} --cron-check${NC}"
+elif [[ "$OS_TYPE" == "windows" ]]; then
+    echo ""
+    echo -e "  ${Y}Windows 定时拉取建议:${NC}"
+    echo -e "  在任务计划程序中添加触发器，执行:"
+    echo -e "  ${C}bash ${INSTALL_DIR}/${SCRIPT_NAME} --cron-check${NC}"
 fi
 echo ""
 

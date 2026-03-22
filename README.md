@@ -208,8 +208,20 @@ sub-manager.sh --check-update    # 只检查是否有新版本
 | Linux (non-root) | 任意 | 同上 | `~/.sub-manager` |
 | macOS | Homebrew | brew | `~/.sub-manager` |
 | Windows | Git Bash / WSL | winget / 手动 | `~/.sub-manager` |
+| **OpenWrt** | 21.02 及以上 | opkg | `/opt/sub-manager` |
 
 依赖：`curl` `git` `jq`（自动安装，Linux 支持阿里云 / 清华 / 中科大 / 华为云镜像回退）
+
+### OpenWrt 安装
+
+```bash
+wget -O /tmp/install.sh "https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/install.sh" && sh /tmp/install.sh
+```
+
+> - 安装程序会自动检测 OpenWrt，先通过 opkg 安装 bash，再继续完整安装流程
+> - 依赖（`bash` `curl` `git` `git-http` `jq`）全部通过 opkg 自动安装
+> - 定时任务通过 BusyBox crond 实现，安装时自动启用（`/etc/init.d/cron`）
+> - 若路由器存储空间不足，可先挂载 USB 并将安装目录设为 `SUB_MANAGER_DIR=/mnt/usb/sub-manager sh /tmp/install.sh`
 
 **在本机（macOS/Windows）运行的优势：** 订阅服务商通常只封锁云服务器 IP，本地宽带 IP 不受影响，可绕过 403 限制。
 
@@ -256,4 +268,5 @@ sub-manager.sh --run-task <id>  # 立即执行指定任务
 sub-manager.sh --update         # 直接执行更新
 sub-manager.sh --check-update   # 检查是否有新版本
 sub-manager.sh --status         # 显示状态摘要
+sub-manager.sh --bot            # 启动 Telegram Bot（前台）
 ```

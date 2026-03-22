@@ -1,10 +1,30 @@
-#!/bin/bash
+#!/bin/sh
 # ============================================================
 #  订阅管理工具 - 安装脚本
 #  平台: Linux (Ubuntu/Debian/CentOS/Alpine/Arch/...) /
-#        macOS / Windows (Git Bash / WSL)
+#        macOS / Windows (Git Bash / WSL) / OpenWrt
 #  依赖安装失败时自动切换镜像源重试
 # ============================================================
+
+# ── bash 自举 (兼容 OpenWrt/BusyBox ash) ──────────────────
+# 若当前 shell 不是 bash，自动切换到 bash 执行
+if [ -z "${BASH_VERSION:-}" ]; then
+    if command -v bash >/dev/null 2>&1; then
+        exec bash "$0" "$@"
+    elif [ -f /etc/openwrt_release ] && command -v opkg >/dev/null 2>&1; then
+        printf '\033[0;36m  OpenWrt 检测到: 正在安装 bash...\033[0m\n'
+        opkg update >/dev/null 2>&1 || true
+        if opkg install bash >/dev/null 2>&1; then
+            exec bash "$0" "$@"
+        else
+            printf '\033[0;31m  错误: bash 安装失败，请手动执行: opkg install bash\033[0m\n'
+            exit 1
+        fi
+    else
+        echo "错误: 需要 bash 才能运行此脚本，请先安装 bash"
+        exit 1
+    fi
+fi
 
 set -e
 
@@ -16,11 +36,13 @@ case "$(uname -s 2>/dev/null)" in
     MINGW*|MSYS*|CYGWIN*) OS_TYPE="windows" ;;
     *)                  OS_TYPE="linux"   ;;
 esac
+# OpenWrt 单独标记（uname -s 返回 Linux，但包管理器/cron 不同）
+[[ -f /etc/openwrt_release ]] && OS_TYPE="openwrt"
 
 # ── 安装目录 ───────────────────────────────────────────────
 if [[ -n "${SUB_MANAGER_DIR:-}" ]]; then
     INSTALL_DIR="$SUB_MANAGER_DIR"
-elif [[ "$OS_TYPE" == "linux" && "${EUID:-$(id -u)}" -eq 0 ]]; then
+elif [[ ( "$OS_TYPE" == "linux" || "$OS_TYPE" == "openwrt" ) && "${EUID:-$(id -u)}" -eq 0 ]]; then
     INSTALL_DIR="/opt/sub-manager"
 else
     INSTALL_DIR="${HOME}/.sub-manager"
@@ -40,7 +62,7 @@ echo -e "  平台: ${W}${OS_TYPE}${NC}  |  安装目录: ${C}${INSTALL_DIR}${NC}
 echo ""
 
 # ── Linux root 检查（macOS/Windows 不强制） ────────────────
-if [[ "$OS_TYPE" == "linux" && "${EUID:-$(id -u)}" -ne 0 ]]; then
+if [[ ( "$OS_TYPE" == "linux" || "$OS_TYPE" == "openwrt" ) && "${EUID:-$(id -u)}" -ne 0 ]]; then
     echo -e "  ${Y}提示: 非 root 用户，将安装到 ${INSTALL_DIR}${NC}"
     echo -e "  ${Y}如需安装到 /opt/sub-manager 请用 sudo bash install.sh${NC}"
     echo ""
@@ -108,6 +130,7 @@ detect_distro() {
     case "$OS_TYPE" in
         macos)   echo "macos"; return ;;
         windows) echo "windows"; return ;;
+        openwrt) echo "openwrt"; return ;;
     esac
     if [[ -f /etc/os-release ]]; then
         # shellcheck disable=SC1091
@@ -375,6 +398,12 @@ _run_install_cmd() {
             timeout "$INSTALL_TIMEOUT" pacman -S --noconfirm --needed -q "$pkg" > /dev/null 2>&1 ;;
         opensuse*|sles)
             timeout "$INSTALL_TIMEOUT" zypper install -y -q "$pkg" > /dev/null 2>&1 ;;
+        openwrt)
+            timeout "$INSTALL_TIMEOUT" opkg install "$pkg" > /dev/null 2>&1 || return 1
+            # git on OpenWrt needs git-http for HTTPS (GitHub push)
+            if [[ "$pkg" == "git" ]]; then
+                timeout "$INSTALL_TIMEOUT" opkg install git-http > /dev/null 2>&1 || true
+            fi ;;
         macos)
             if command -v brew &>/dev/null; then
                 brew install -q "$pkg" > /dev/null 2>&1
@@ -406,6 +435,8 @@ _update_index() {
             fi ;;
         arch|manjaro|endeavouros)
             timeout "$INSTALL_TIMEOUT" pacman -Sy --noconfirm -q > /dev/null 2>&1 ;;
+        openwrt)
+            timeout "$INSTALL_TIMEOUT" opkg update > /dev/null 2>&1 ;;
     esac
 }
 
@@ -416,6 +447,15 @@ install_pkg() {
     local distro="$2"   # 可选，外部传入避免重复检测
     [[ -z "$distro" ]] && distro=$(detect_distro)
     local version; version=$(detect_distro_version)
+
+    # openwrt / macos / windows: opkg/brew/winget 无镜像切换，直接安装
+    case "$distro" in
+        openwrt|macos|windows)
+            _update_index "$distro" 2>/dev/null || true
+            _run_install_cmd "$distro" "$pkg"
+            return $?
+            ;;
+    esac
 
     # 决定当前发行版对应的镜像列表名
     local -a mirrors=()
@@ -502,6 +542,8 @@ case "$DISTRO" in
         apt-get update -q > /dev/null 2>&1 && echo -e " ${G}✓${NC}" || echo -e " ${Y}失败(将在安装时重试)${NC}" ;;
     alpine)
         apk update -q > /dev/null 2>&1 && echo -e " ${G}✓${NC}" || echo -e " ${Y}失败(将在安装时重试)${NC}" ;;
+    openwrt)
+        opkg update > /dev/null 2>&1 && echo -e " ${G}✓${NC}" || echo -e " ${Y}失败(将在安装时重试)${NC}" ;;
     centos|rhel|rocky|almalinux|ol|fedora)
         echo -e " ${Y}跳过(rpm系按需更新)${NC}" ;;
     *)
@@ -526,6 +568,7 @@ for dep in curl git jq; do
                 centos|rhel*)  echo -e "  ${C}yum install -y ${dep}${NC}" ;;
                 alpine)        echo -e "  ${C}apk add ${dep}${NC}" ;;
                 arch*)         echo -e "  ${C}pacman -S ${dep}${NC}" ;;
+                openwrt)       echo -e "  ${C}opkg install ${dep}${NC}" ;;
             esac
         fi
     fi
@@ -603,7 +646,7 @@ echo -e "  ${G}✓ 已安装到 ${INSTALL_DIR}/${SCRIPT_NAME}${NC}"
 echo ""
 echo -e "  ${W}[4/5] 配置快捷命令...${NC}"
 
-if [[ "$OS_TYPE" == "linux" && -d /etc/profile.d ]]; then
+if [[ ( "$OS_TYPE" == "linux" || "$OS_TYPE" == "openwrt" ) && -d /etc/profile.d ]]; then
     cat > /etc/profile.d/sub-manager.sh << PROFILEEOF
 # Sub Manager - 订阅管理工具
 alias subm='${INSTALL_DIR}/${SCRIPT_NAME}'
@@ -613,7 +656,7 @@ PROFILEEOF
 fi
 
 # 写入用户 rc 文件（Linux root 写 /root/*, macOS/普通用户写 $HOME/*）
-if [[ "$OS_TYPE" == "linux" && "${EUID:-$(id -u)}" -eq 0 ]]; then
+if [[ ( "$OS_TYPE" == "linux" || "$OS_TYPE" == "openwrt" ) && "${EUID:-$(id -u)}" -eq 0 ]]; then
     RC_FILES=("/root/.bashrc" "/root/.zshrc")
 else
     RC_FILES=("${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.bash_profile")
@@ -682,7 +725,10 @@ start_cron_service() {
     fi
 }
 
-if [[ "$DISTRO" == "alpine" ]]; then
+if [[ "$DISTRO" == "openwrt" ]]; then
+    /etc/init.d/cron enable 2>/dev/null || true
+    /etc/init.d/cron start  2>/dev/null || true
+elif [[ "$DISTRO" == "alpine" ]]; then
     if ! command -v crond &>/dev/null; then
         install_pkg "dcron" "alpine" 2>/dev/null || true
     fi
@@ -721,6 +767,11 @@ if [[ "$OS_TYPE" == "macos" ]]; then
     echo -e "  ${Y}macOS 定时拉取建议:${NC}"
     echo -e "  使用 launchd 或直接 crontab -e 添加:"
     echo -e "  ${C}*/60 * * * * ${INSTALL_DIR}/${SCRIPT_NAME} --cron-check${NC}"
+elif [[ "$OS_TYPE" == "openwrt" ]]; then
+    echo ""
+    echo -e "  ${Y}OpenWrt 提示:${NC}"
+    echo -e "  定时任务已通过 /etc/init.d/cron 启用"
+    echo -e "  如 cron 未生效请执行: ${C}/etc/init.d/cron restart${NC}"
 elif [[ "$OS_TYPE" == "windows" ]]; then
     echo ""
     echo -e "  ${Y}Windows 定时拉取建议:${NC}"

@@ -2,10 +2,10 @@
 # ============================================================
 #  订阅管理工具 (Subscription Manager) v1.2.0
 #  功能: 订阅拉取 / GitHub推送 / 消息通知 / 定时任务
-#  平台: Linux / macOS / Windows (Git Bash / WSL)
+#  平台: Linux / macOS / Windows (Git Bash / WSL) / OpenWrt
 # ============================================================
 
-readonly VERSION="1.3.8"  # auto-managed by .githooks/pre-commit
+readonly VERSION="1.3.9"  # auto-managed by .githooks/pre-commit
 readonly GITHUB_RAW="https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main"
 readonly GITHUB_RAW_PROXY="https://ghfast.top/${GITHUB_RAW}"
 

@@ -642,6 +642,48 @@ cp "$SCRIPT_SRC" "${INSTALL_DIR}/${SCRIPT_NAME}"
 chmod +x "${INSTALL_DIR}/${SCRIPT_NAME}"
 echo -e "  ${G}✓ 已安装到 ${INSTALL_DIR}/${SCRIPT_NAME}${NC}"
 
+# ── 安装模块文件 ───────────────────────────────────────────
+echo ""
+echo -e "  ${W}[3b/5] 安装功能模块...${NC}"
+mkdir -p "${INSTALL_DIR}/lib"
+
+# 检测本地 lib/ 目录（供本地运行 install.sh 时使用）
+_LOCAL_LIB_DIR=""
+if [[ "$_is_pipe_run" == "false" && -n "${SCRIPT_DIR_REAL:-}" && -d "${SCRIPT_DIR_REAL}/lib" ]]; then
+    _LOCAL_LIB_DIR="${SCRIPT_DIR_REAL}/lib"
+fi
+
+_LIB_MODULES=(core tasks repos notify proxy fetch scheduler update bot)
+_lib_failed=0
+for _mod in "${_LIB_MODULES[@]}"; do
+    printf "  %-12s " "lib/${_mod}.sh"
+    if [[ -n "$_LOCAL_LIB_DIR" && -f "${_LOCAL_LIB_DIR}/${_mod}.sh" ]]; then
+        cp "${_LOCAL_LIB_DIR}/${_mod}.sh" "${INSTALL_DIR}/lib/${_mod}.sh"
+        chmod +x "${INSTALL_DIR}/lib/${_mod}.sh"
+        echo -e "${G}✓ (本地)${NC}"
+    else
+        local _ltmp; _ltmp=$(mktemp)
+        if curl -fsSL --connect-timeout 8 --max-time 30 \
+            "${GITHUB_RAW}/lib/${_mod}.sh" -o "$_ltmp" 2>/dev/null || \
+           curl -fsSL --connect-timeout 8 --max-time 30 \
+            "${GITHUB_RAW_PROXY}/lib/${_mod}.sh" -o "$_ltmp" 2>/dev/null; then
+            mv "$_ltmp" "${INSTALL_DIR}/lib/${_mod}.sh"
+            chmod +x "${INSTALL_DIR}/lib/${_mod}.sh"
+            echo -e "${G}✓${NC}"
+        else
+            rm -f "$_ltmp"
+            echo -e "${R}✗ 下载失败${NC}"
+            _lib_failed=$((_lib_failed + 1))
+        fi
+    fi
+done
+unset _LIB_MODULES _mod _LOCAL_LIB_DIR
+if [[ "$_lib_failed" -gt 0 ]]; then
+    echo -e "  ${R}警告: ${_lib_failed} 个模块下载失败，工具可能无法正常运行${NC}"
+    echo -e "  ${Y}请检查网络后重新运行安装脚本${NC}"
+fi
+unset _lib_failed
+
 # ── 配置快捷命令 ───────────────────────────────────────────
 echo ""
 echo -e "  ${W}[4/5] 配置快捷命令...${NC}"

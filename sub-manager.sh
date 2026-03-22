@@ -856,14 +856,16 @@ send_notification() {
 
 # 订阅拉取常用 User-Agent 列表（遇到 403/407 时自动轮换）
 FETCH_UA_LIST=(
+    "clash-meta/2.4.0"           # miaomiaowu 默认 UA，兼容性最广
     "clash.meta"
+    "ClashforWindows/0.20.39"
     "ClashForAndroid/2.5.12"
     "ClashX/1.95.1"
+    "Clash/1.18.0"
     "v2rayN/6.23"
+    "sing-box/1.8.0"
     "Quantumult%2FX"
     "Surge/5.8.0"
-    "sing-box/1.8.0"
-    "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36"
 )
 
 # _do_fetch <url> <ua> <extra_headers> <insecure> <proxy> <out_file>

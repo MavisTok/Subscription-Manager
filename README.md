@@ -136,7 +136,41 @@ GitHub Token 需要 `repo` 权限，在 GitHub → Settings → Developer settin
 - 按每个任务独立设置的间隔判断是否到期执行
 - 可通过菜单「系统设置」随时启用或禁用
 
-### 5. 更新机制
+### 5. Telegram Bot 远程控制
+
+通过 Telegram Bot 远程管理订阅，无需登录服务器。
+
+**配置：** 主菜单 → 「8. Telegram Bot」→ 设置 Bot Token 和 Chat ID
+
+**支持的命令：**
+
+| 命令 | 说明 |
+| ---- | ---- |
+| `/help` | 显示所有命令 |
+| `/status` | 查看运行状态（任务数、仓库数、版本） |
+| `/tasks` | 列出所有拉取任务 |
+| `/repos` | 列出所有 GitHub 仓库 |
+| `/run <id>` | 立即执行指定任务（全流程：拉取→推送→通知） |
+| `/toggle <id>` | 启用或禁用指定任务 |
+| `/push <id>` | 立即推送指定仓库 |
+| `/logs` | 查看最近日志 |
+| `/addtask` | 多步骤交互添加拉取任务 |
+| `/addrepo` | 多步骤交互添加 GitHub 仓库 |
+| `/cancel` | 取消当前多步骤操作 |
+
+**启动方式：**
+
+```bash
+# 前台运行（调试）
+sub-manager.sh --bot
+
+# 后台守护（菜单启动）
+主菜单 → 8. Telegram Bot → 启动 Bot (后台守护)
+```
+
+Bot 仅响应配置的 Chat ID，其他用户的消息会被忽略。
+
+### 6. 更新机制
 
 主菜单启动时后台静默检测，有新版本时顶部显示提示：
 

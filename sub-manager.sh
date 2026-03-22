@@ -421,6 +421,12 @@ repo_add() {
     github_url=$(read_input "GitHub 仓库地址 (https://github.com/user/repo)")
     [[ -z "$github_url" ]] && { echo -e "  ${R}地址不能为空${NC}"; press_enter; return; }
 
+    echo ""
+    echo -e "  ${W}GitHub Access Token 获取方式:${NC}"
+    echo -e "  ${C}https://github.com/settings/tokens/new${NC}"
+    echo -e "  所需权限: ${Y}Contents → Read and write${NC}"
+    echo -e "  (Fine-grained token 选择对应仓库即可)"
+    echo ""
     token=$(read_input "GitHub Access Token")
     branch=$(read_input "推送分支" "main")
     filename=$(read_input "推送文件名" "subscription.txt")
@@ -473,6 +479,10 @@ repo_edit() {
     local new_name new_url new_token new_branch new_filename new_task_ids_str
     new_name=$(read_input "名称" "$cur_name")
     new_url=$(read_input "仓库地址" "$cur_url")
+    echo ""
+    echo -e "  ${W}Token 获取:${NC} ${C}https://github.com/settings/tokens/new${NC}"
+    echo -e "  所需权限: ${Y}Contents → Read and write${NC}"
+    echo ""
     new_token=$(read_input "Access Token" "$cur_token")
     new_branch=$(read_input "分支" "$cur_branch")
     new_filename=$(read_input "文件名" "$cur_filename")

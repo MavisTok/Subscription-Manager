@@ -149,22 +149,6 @@ probe_mirror() {
         -o /dev/null -I "https://${host}" 2>/dev/null
 }
 
-# find_reachable_mirror <mirror_array_name>
-# 返回第一个可达的镜像名，若全不可达则返回最后一个
-find_reachable_mirror() {
-    local -n _mirrors="$1"
-    local last=""
-    for m in "${_mirrors[@]}"; do
-        last="$m"
-        if probe_mirror "$m"; then
-            echo "$m"
-            return 0
-        fi
-    done
-    # 全部探测失败，回退官方 (第一项)
-    echo "${_mirrors[0]}"
-}
-
 # ══════════════════════════════════════════════════════════
 #  源文件备份 / 还原
 # ══════════════════════════════════════════════════════════
@@ -651,7 +635,7 @@ echo -e "  是否将无参数 'su' 重定向为打开管理工具?"
 echo -e "  ${C}(有参数时 su root / su - 仍正常切换用户)${NC}"
 read -rp "  [y/N]: " override_su
 
-if [[ "${override_su,,}" == "y" ]]; then
+if [[ "$(echo "$override_su" | tr '[:upper:]' '[:lower:]')" == "y" ]]; then
     REAL_SU=$(command -v su 2>/dev/null || echo "/bin/su")
     [[ "$REAL_SU" == "/usr/local/bin/su" ]] && REAL_SU="/bin/su"
 
@@ -737,6 +721,6 @@ fi
 echo ""
 
 read -rp "  是否立即打开管理界面? [Y/n]: " launch
-if [[ "${launch,,}" != "n" ]]; then
+if [[ "$(echo "$launch" | tr '[:upper:]' '[:lower:]')" != "n" ]]; then
     bash "${INSTALL_DIR}/${SCRIPT_NAME}"
 fi

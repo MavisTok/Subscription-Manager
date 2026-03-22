@@ -65,7 +65,7 @@ log() {
     local ts; ts=$(date '+%Y-%m-%d %H:%M:%S')
     mkdir -p "$LOG_DIR"
     echo "[$ts][$level] $msg" >> "${LOG_DIR}/main.log"
-    echo "[$ts][$level] $msg" >> "${LOG_DIR}/${level,,}.log"
+    echo "[$ts][$level] $msg" >> "${LOG_DIR}/$(echo "$level" | tr '[:upper:]' '[:lower:]').log"
 }
 
 press_enter() { echo ""; read -rp "  按 Enter 键继续..." _; }
@@ -96,7 +96,7 @@ read_input() {
 confirm() {
     local prompt="${1:-确认操作}" answer
     read -rp "  $prompt [y/N]: " answer
-    [[ "${answer,,}" == "y" ]]
+    [[ "$(echo "$answer" | tr '[:upper:]' '[:lower:]')" == "y" ]]
 }
 
 # ── 初始化配置文件 ─────────────────────────────────────────
@@ -579,7 +579,7 @@ notify_telegram() {
     new_token=$(read_input "Bot Token" "$cur_token")
     new_chat_id=$(read_input "Chat ID" "$cur_chat_id")
     read -rp "  启用 Telegram 通知? [y/N]: " enable_yn
-    [[ "${enable_yn,,}" == "y" ]] && new_enabled="true" || new_enabled="false"
+    [[ "$(echo "$enable_yn" | tr '[:upper:]' '[:lower:]')" == "y" ]] && new_enabled="true" || new_enabled="false"
 
     local tmp; tmp=$(mktemp)
     jq --arg token "$new_token" --arg chat_id "$new_chat_id" \
@@ -607,7 +607,7 @@ notify_bark() {
     new_key=$(read_input "Bark Key" "$cur_key")
     new_server=$(read_input "Bark Server" "$cur_server")
     read -rp "  启用 Bark 通知? [y/N]: " enable_yn
-    [[ "${enable_yn,,}" == "y" ]] && new_enabled="true" || new_enabled="false"
+    [[ "$(echo "$enable_yn" | tr '[:upper:]' '[:lower:]')" == "y" ]] && new_enabled="true" || new_enabled="false"
 
     local tmp; tmp=$(mktemp)
     jq --arg key "$new_key" --arg server "$new_server" \
@@ -636,7 +636,7 @@ notify_webhook() {
     new_url=$(read_input "Webhook URL" "$cur_url")
     new_method=$(read_input "HTTP 方法 (POST/GET)" "$cur_method")
     read -rp "  启用 Webhook 通知? [y/N]: " enable_yn
-    [[ "${enable_yn,,}" == "y" ]] && new_enabled="true" || new_enabled="false"
+    [[ "$(echo "$enable_yn" | tr '[:upper:]' '[:lower:]')" == "y" ]] && new_enabled="true" || new_enabled="false"
 
     local tmp; tmp=$(mktemp)
     jq --arg url "$new_url" --arg method "$new_method" \
@@ -711,7 +711,7 @@ proxy_config() {
     local new_proxy enable_yn new_enabled
     new_proxy=$(read_input "代理地址" "$cur_proxy")
     read -rp "  启用拉取代理? [y/N]: " enable_yn
-    [[ "${enable_yn,,}" == "y" ]] && new_enabled="true" || new_enabled="false"
+    [[ "$(echo "$enable_yn" | tr '[:upper:]' '[:lower:]')" == "y" ]] && new_enabled="true" || new_enabled="false"
 
     local tmp; tmp=$(mktemp)
     jq --arg proxy "$new_proxy" --argjson enabled "$new_enabled" \

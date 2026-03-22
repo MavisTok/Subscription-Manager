@@ -5,7 +5,7 @@
 #  平台: Linux / macOS / Windows (Git Bash / WSL)
 # ============================================================
 
-readonly VERSION="1.3.5"  # auto-managed by .githooks/pre-commit
+readonly VERSION="1.3.6"  # auto-managed by .githooks/pre-commit
 readonly GITHUB_RAW="https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main"
 readonly GITHUB_RAW_PROXY="https://ghfast.top/${GITHUB_RAW}"
 
@@ -432,7 +432,8 @@ repo_add() {
     echo ""
     token=$(read_input "GitHub Access Token")
     branch=$(read_input "推送分支" "main")
-    filename=$(read_input "推送路径 (支持子目录, 如: configs/clash.yaml)" "subscription.txt")
+    echo -e "  ${Y}格式: 文件名 或 目录/文件名 (如: public/clash.yaml)${NC}"
+    filename=$(read_input "推送文件路径" "subscription.txt")
 
     echo ""
     echo -e "  ${C}可用任务:${NC}"
@@ -486,6 +487,15 @@ repo_edit() {
     clear_screen
     print_header "编辑 GitHub 仓库"
 
+    local count; count=$(jq '.repos | length' "$REPOS_FILE")
+    if [[ "$count" -eq 0 ]]; then
+        echo -e "  ${Y}暂无仓库配置${NC}"; press_enter; return
+    fi
+
+    echo -e "  ${W}当前仓库列表:${NC}"
+    jq -r '.repos[] | "  [\(.id)] \(.name)  \(.github_url)  → \(.filename)"' "$REPOS_FILE"
+    echo ""
+
     local id; id=$(read_input "请输入要编辑的仓库 ID")
     local repo; repo=$(jq --argjson id "$id" '.repos[] | select(.id==$id)' "$REPOS_FILE" 2>/dev/null)
     if [[ -z "$repo" ]]; then
@@ -510,7 +520,10 @@ repo_edit() {
     echo ""
     new_token=$(read_input "Access Token" "$cur_token")
     new_branch=$(read_input "分支" "$cur_branch")
-    new_filename=$(read_input "推送路径 (支持子目录)" "$cur_filename")
+    echo ""
+    echo -e "  ${Y}当前推送路径: ${C}${cur_filename}${NC}"
+    echo -e "  ${Y}格式: 文件名 或 目录/文件名 (如: public/clash.yaml)${NC}"
+    new_filename=$(read_input "推送文件路径" "$cur_filename")
 
     echo ""
     echo -e "  ${W}可用任务:${NC}"

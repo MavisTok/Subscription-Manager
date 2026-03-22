@@ -29,6 +29,15 @@ bash <(curl -fsSL --connect-timeout 8 --max-time 30 https://raw.githubuserconten
 
 > 需要 Git Bash，`curl` / `git` / `jq` 通常已内置。
 > 安装目录：`~/.sub-manager`
+
+**Windows（PowerShell 中启动）：**
+
+> PowerShell 不支持 `<(...)` 进程替换，请用以下命令替代：
+
+```powershell
+bash -c 'bash <(curl -fsSL --connect-timeout 8 --max-time 30 https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/install.sh)'
+```
+
 > 安装时自动通过 **Task Scheduler** 配置每分钟定时检查（开机自启）。
 
 **OpenWrt：**

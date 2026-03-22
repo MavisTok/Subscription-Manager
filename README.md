@@ -255,26 +255,29 @@ sub-manager.sh --check-update    # 只检查是否有新版本
 
 | 操作 | 说明 |
 | ---- | ---- |
-| 立即备份配置 | 将 tasks / repos / notify / settings 四个配置文件打包上传到 WebDAV |
-| 从备份恢复配置 | 从 WebDAV 下载备份包，校验格式后覆盖本地配置 |
+| 立即备份配置 | 将 tasks / repos / notify / settings 打包 → AES-256-CBC 加密 → 上传到 WebDAV |
+| 从备份恢复配置 | 下载备份文件 → 用备份密码解密 → 校验格式 → 覆盖本地配置 |
 | 测试连接 | 发送 PROPFIND 请求验证 WebDAV 服务可达性与认证 |
 
-**备份格式（JSON 包）：**
+**备份流程：**
 
-```json
-{
-  "version": "1.4.0",
-  "backup_time": "2026-03-23 10:00:00",
-  "files": {
-    "tasks.json":    { ... },
-    "repos.json":    { ... },
-    "notify.json":   { ... },
-    "settings.json": { ... }
-  }
-}
+```text
+4 个 JSON 配置文件
+    → jq 打包为单个 JSON 包
+        → openssl AES-256-CBC 加密（使用独立备份密码）
+            → curl PUT 上传到 WebDAV（默认路径 .enc）
 ```
 
-> 备份中的敏感字段（密码、Token 等）保持加密存储（`enc:...` 格式），还原时需本机 `.keyfile` 一致才能解密使用。跨机迁移时建议重新输入敏感字段。
+**配置项说明：**
+
+| 字段 | 说明 |
+| ---- | ---- |
+| WebDAV 地址 | 服务器根地址，如 `https://dav.example.com/dav/` |
+| 用户名 / WebDAV 密码 | WebDAV 认证凭据，无认证留空 |
+| 远端备份路径 | 备份文件在 WebDAV 上的存储路径，默认 `/sub-manager-backup.enc` |
+| 备份加密密码 | 独立于 WebDAV 密码，用于加密备份文件内容，**必须设置** |
+
+> 备份文件本身为二进制密文，没有正确密码无法读取。内部敏感字段同时保有 `enc:...` 双重加密。跨机迁移时需在新机器上重新输入敏感字段（Token、密码等），因各机 `.keyfile` 不同。
 
 ---
 

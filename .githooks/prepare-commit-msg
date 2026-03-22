@@ -1,11 +1,11 @@
 #!/bin/bash
 # 将当前 sub-manager.sh 版本号追加到 commit 消息第一行末尾
-# 仅当 sub-manager.sh 在暂存区时生效
+# 当 sub-manager.sh 或任意 lib/*.sh 被 staged 时生效
 
 SCRIPT="sub-manager.sh"
 COMMIT_MSG_FILE="$1"
 
-git diff --cached --name-only | grep -qE "^${SCRIPT}$" || exit 0
+git diff --cached --name-only | grep -qE "^(${SCRIPT}|lib/.+\.sh)$" || exit 0
 
 # 读取版本（pre-commit 已 bump，这里读的是 bump 后的值）
 ver=$(grep -m1 "^readonly VERSION=" "$SCRIPT" 2>/dev/null | cut -d'"' -f2)

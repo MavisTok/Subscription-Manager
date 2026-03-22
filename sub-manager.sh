@@ -13,13 +13,43 @@ readonly GITHUB_RAW_PROXY="https://ghfast.top/${GITHUB_RAW}"
 _ENTRY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 readonly _LIB_DIR="${_ENTRY_DIR}/lib"
 
+# 检测是否缺少模块，老版本升级后自动补全下载
+_missing=0
 for _mod in core tasks repos notify proxy fetch scheduler update bot; do
-    _f="${_LIB_DIR}/${_mod}.sh"
-    if [[ ! -f "$_f" ]]; then
-        echo "错误: 缺少模块 ${_f}"
-        echo "请重新安装: bash <(curl -fsSL ${GITHUB_RAW}/install.sh)"
+    [[ ! -f "${_LIB_DIR}/${_mod}.sh" ]] && _missing=$(( _missing + 1 ))
+done
+
+if [[ "$_missing" -gt 0 ]]; then
+    echo "检测到 ${_missing} 个模块缺失，正在自动下载..."
+    mkdir -p "$_LIB_DIR"
+    _dl_ok=0
+    for _mod in core tasks repos notify proxy fetch scheduler update bot; do
+        _f="${_LIB_DIR}/${_mod}.sh"
+        [[ -f "$_f" ]] && continue
+        printf "  lib/%s.sh ... " "${_mod}"
+        if curl -fsSL --connect-timeout 10 --max-time 30 \
+                "${GITHUB_RAW}/lib/${_mod}.sh" -o "$_f" 2>/dev/null || \
+           curl -fsSL --connect-timeout 10 --max-time 30 \
+                "${GITHUB_RAW_PROXY}/lib/${_mod}.sh" -o "$_f" 2>/dev/null; then
+            chmod +x "$_f"
+            echo "✓"
+            _dl_ok=$(( _dl_ok + 1 ))
+        else
+            rm -f "$_f"
+            echo "✗"
+        fi
+    done
+    if [[ "$_dl_ok" -lt "$_missing" ]]; then
+        echo "部分模块下载失败，请检查网络后重试，或重新安装:"
+        echo "  bash <(curl -fsSL ${GITHUB_RAW_PROXY}/install.sh)"
         exit 1
     fi
+    echo "模块下载完成，继续启动..."
+fi
+unset _missing _dl_ok _mod
+
+for _mod in core tasks repos notify proxy fetch scheduler update bot; do
+    _f="${_LIB_DIR}/${_mod}.sh"
     # shellcheck disable=SC1090
     source "$_f"
 done

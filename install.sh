@@ -662,7 +662,7 @@ for _mod in "${_LIB_MODULES[@]}"; do
         chmod +x "${INSTALL_DIR}/lib/${_mod}.sh"
         echo -e "${G}✓ (本地)${NC}"
     else
-        local _ltmp; _ltmp=$(mktemp)
+        _ltmp=$(mktemp)
         if curl -fsSL --connect-timeout 8 --max-time 30 \
             "${GITHUB_RAW}/lib/${_mod}.sh" -o "$_ltmp" 2>/dev/null || \
            curl -fsSL --connect-timeout 8 --max-time 30 \

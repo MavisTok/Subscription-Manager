@@ -245,6 +245,37 @@ sub-manager.sh --check-update    # 只检查是否有新版本
 
 > **从 v1.3.7 及以下（单文件旧版本）升级时**，启动新版本会自动检测到 `lib/` 模块缺失并在线下载，无需手动重装。
 
+### 8. WebDAV 同步
+
+将所有配置打包为单个 JSON 备份文件，通过 WebDAV 上传/下载，实现跨机器迁移或定期备份。
+
+**支持的服务：** Nextcloud / ownCloud / Seafile / 群晖 WebStation / 坚果云 / 任何标准 WebDAV 服务
+
+**配置：** 主菜单 → 「9. WebDAV 同步」→「1. 配置 WebDAV 服务器」
+
+| 操作 | 说明 |
+| ---- | ---- |
+| 立即备份配置 | 将 tasks / repos / notify / settings 四个配置文件打包上传到 WebDAV |
+| 从备份恢复配置 | 从 WebDAV 下载备份包，校验格式后覆盖本地配置 |
+| 测试连接 | 发送 PROPFIND 请求验证 WebDAV 服务可达性与认证 |
+
+**备份格式（JSON 包）：**
+
+```json
+{
+  "version": "1.4.0",
+  "backup_time": "2026-03-23 10:00:00",
+  "files": {
+    "tasks.json":    { ... },
+    "repos.json":    { ... },
+    "notify.json":   { ... },
+    "settings.json": { ... }
+  }
+}
+```
+
+> 备份中的敏感字段（密码、Token 等）保持加密存储（`enc:...` 格式），还原时需本机 `.keyfile` 一致才能解密使用。跨机迁移时建议重新输入敏感字段。
+
 ---
 
 ## 系统兼容性
@@ -285,7 +316,8 @@ Subscription-Manager/
 │   ├── fetch.sh            # 订阅拉取（UA轮换、403诊断、自定义请求头）
 │   ├── scheduler.sh        # 定时调度（cron/launchd/systemd/schtasks）、日志、系统设置
 │   ├── update.sh           # 版本检测与更新、回滚
-│   └── bot.sh              # Telegram Bot（多客户端、命令路由、状态机）
+│   ├── bot.sh              # Telegram Bot（多客户端、命令路由、状态机）
+│   └── webdav.sh           # WebDAV 同步（备份/恢复配置）
 └── .githooks/
     ├── pre-commit          # 自动 bump 版本号（PATCH/MINOR/MAJOR）
     └── prepare-commit-msg  # commit 消息追加版本号标记
@@ -304,7 +336,8 @@ Subscription-Manager/
 ├── config/
 │   ├── tasks.json          # 拉取任务配置（敏感字段已加密）
 │   ├── repos.json          # GitHub 仓库配置（敏感字段已加密）
-│   └── notify.json         # 消息推送配置（敏感字段已加密）
+│   ├── notify.json         # 消息推送配置（敏感字段已加密）
+│   └── webdav.json         # WebDAV 同步配置（密码已加密，按需创建）
 ├── data/
 │   └── task_<id>.txt       # 本地订阅文件
 └── logs/

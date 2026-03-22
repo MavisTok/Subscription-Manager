@@ -15,7 +15,7 @@ readonly _LIB_DIR="${_ENTRY_DIR}/lib"
 
 # 检测是否缺少模块，老版本升级后自动补全下载
 _missing=0
-for _mod in core tasks repos notify proxy fetch scheduler update bot; do
+for _mod in core tasks repos notify proxy fetch scheduler update bot webdav; do
     [[ ! -f "${_LIB_DIR}/${_mod}.sh" ]] && _missing=$(( _missing + 1 ))
 done
 
@@ -23,7 +23,7 @@ if [[ "$_missing" -gt 0 ]]; then
     echo "检测到 ${_missing} 个模块缺失，正在自动下载..."
     mkdir -p "$_LIB_DIR"
     _dl_ok=0
-    for _mod in core tasks repos notify proxy fetch scheduler update bot; do
+    for _mod in core tasks repos notify proxy fetch scheduler update bot webdav; do
         _f="${_LIB_DIR}/${_mod}.sh"
         [[ -f "$_f" ]] && continue
         printf "  lib/%s.sh ... " "${_mod}"
@@ -48,7 +48,7 @@ if [[ "$_missing" -gt 0 ]]; then
 fi
 unset _missing _dl_ok _mod
 
-for _mod in core tasks repos notify proxy fetch scheduler update bot; do
+for _mod in core tasks repos notify proxy fetch scheduler update bot webdav; do
     _f="${_LIB_DIR}/${_mod}.sh"
     # shellcheck disable=SC1090
     source "$_f"
@@ -87,6 +87,7 @@ main_menu() {
         echo -e "  ${C}6.${NC} 查看日志"
         echo -e "  ${C}7.${NC} 系统设置"
         echo -e "  ${C}8.${NC} Telegram Bot"
+        echo -e "  ${C}9.${NC} WebDAV 同步"
         echo -e "  ${C}0.${NC} 退出"
         echo ""
 
@@ -100,6 +101,7 @@ main_menu() {
             6) view_logs ;;
             7) system_settings ;;
             8) bot_menu ;;
+            9) webdav_menu ;;
             0) echo -e "\n  再见!\n"; exit 0 ;;
             *) echo -e "  ${R}无效选项${NC}"; sleep 1 ;;
         esac

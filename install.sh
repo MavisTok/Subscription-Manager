@@ -684,6 +684,32 @@ if [[ "$_lib_failed" -gt 0 ]]; then
 fi
 unset _lib_failed
 
+# ── 安装 PowerShell 启动器 (Windows) ───────────────────────
+if [[ "$OS_TYPE" == "windows" ]]; then
+    _PS1_FILE="sub-manager.ps1"
+    printf "  %-22s " "$_PS1_FILE"
+    _ps1_installed=false
+    if [[ "$_is_pipe_run" == "false" && -n "${SCRIPT_DIR_REAL:-}" && -f "${SCRIPT_DIR_REAL}/${_PS1_FILE}" ]]; then
+        cp "${SCRIPT_DIR_REAL}/${_PS1_FILE}" "${INSTALL_DIR}/${_PS1_FILE}"
+        _ps1_installed=true
+        echo -e "${G}✓ (本地)${NC}"
+    else
+        _ps1_tmp=$(mktemp)
+        if curl -fsSL --connect-timeout 8 --max-time 30 \
+                "${GITHUB_RAW}/${_PS1_FILE}" -o "$_ps1_tmp" 2>/dev/null || \
+           curl -fsSL --connect-timeout 8 --max-time 30 \
+                "${GITHUB_RAW_PROXY}/${_PS1_FILE}" -o "$_ps1_tmp" 2>/dev/null; then
+            mv "$_ps1_tmp" "${INSTALL_DIR}/${_PS1_FILE}"
+            _ps1_installed=true
+            echo -e "${G}✓${NC}"
+        else
+            rm -f "$_ps1_tmp"
+            echo -e "${Y}跳过 (可选)${NC}"
+        fi
+    fi
+    unset _PS1_FILE _ps1_tmp _ps1_installed
+fi
+
 # ── 配置快捷命令 ───────────────────────────────────────────
 echo ""
 echo -e "  ${W}[4/5] 配置快捷命令...${NC}"
@@ -767,7 +793,32 @@ start_cron_service() {
     fi
 }
 
-if [[ "$DISTRO" == "openwrt" ]]; then
+if [[ "$OS_TYPE" == "windows" ]]; then
+    # Windows: 使用 Task Scheduler 替代 crontab
+    if command -v schtasks &>/dev/null; then
+        _win_bash_exe() { cygpath -w "${BASH:-$(command -v bash)}" 2>/dev/null || echo "bash.exe"; }
+        _win_p() { cygpath -w "$1" 2>/dev/null || echo "$1"; }
+        _bat="${INSTALL_DIR}/cron-check.bat"
+        _bash_exe=$(_win_bash_exe)
+        _script_win=$(_win_p "${INSTALL_DIR}/${SCRIPT_NAME}")
+        _log_win=$(_win_p "${INSTALL_DIR}/logs/cron.log")
+        printf '@echo off\n"%s" -l "%s" --cron-check >> "%s" 2>&1\n' \
+            "$_bash_exe" "$_script_win" "$_log_win" > "$_bat"
+        _bat_win=$(_win_p "$_bat")
+        if schtasks /Query /TN "SubManager" > /dev/null 2>&1; then
+            echo -e "  ${Y}→ Task Scheduler 任务已存在，跳过${NC}"
+        elif schtasks /Create /F /TN "SubManager" \
+                /TR "\"${_bat_win}\"" \
+                /SC MINUTE /MO 1 /RL HIGHEST > /dev/null 2>&1; then
+            echo -e "  ${G}✓ Task Scheduler 任务已创建 (每分钟检查, 开机自启)${NC}"
+        else
+            echo -e "  ${R}✗ Task Scheduler 创建失败，请以管理员身份重新运行${NC}"
+        fi
+        unset _win_bash_exe _win_p _bat _bash_exe _script_win _log_win _bat_win
+    else
+        echo -e "  ${Y}未找到 schtasks.exe，跳过定时任务配置${NC}"
+    fi
+elif [[ "$DISTRO" == "openwrt" ]]; then
     /etc/init.d/cron enable 2>/dev/null || true
     /etc/init.d/cron start  2>/dev/null || true
 elif [[ "$DISTRO" == "alpine" ]]; then
@@ -780,12 +831,14 @@ else
     start_cron_service
 fi
 
-CRON_ENTRY="* * * * * ${INSTALL_DIR}/${SCRIPT_NAME} --cron-check >> ${INSTALL_DIR}/logs/cron.log 2>&1"
-if crontab -l 2>/dev/null | grep -qF "sub-manager.sh --cron-check"; then
-    echo -e "  ${Y}→ Cron 条目已存在，跳过${NC}"
-else
-    ( crontab -l 2>/dev/null; echo "$CRON_ENTRY" ) | crontab -
-    echo -e "  ${G}✓ 定时任务已添加 (每分钟检查执行到期任务)${NC}"
+if [[ "$OS_TYPE" != "windows" ]]; then
+    CRON_ENTRY="* * * * * ${INSTALL_DIR}/${SCRIPT_NAME} --cron-check >> ${INSTALL_DIR}/logs/cron.log 2>&1"
+    if crontab -l 2>/dev/null | grep -qF "sub-manager.sh --cron-check"; then
+        echo -e "  ${Y}→ Cron 条目已存在，跳过${NC}"
+    else
+        ( crontab -l 2>/dev/null; echo "$CRON_ENTRY" ) | crontab -
+        echo -e "  ${G}✓ 定时任务已添加 (每分钟检查执行到期任务)${NC}"
+    fi
 fi
 
 # ── 清理临时文件 ───────────────────────────────────────────
@@ -816,9 +869,9 @@ elif [[ "$OS_TYPE" == "openwrt" ]]; then
     echo -e "  如 cron 未生效请执行: ${C}/etc/init.d/cron restart${NC}"
 elif [[ "$OS_TYPE" == "windows" ]]; then
     echo ""
-    echo -e "  ${Y}Windows 定时拉取建议:${NC}"
-    echo -e "  在任务计划程序中添加触发器，执行:"
-    echo -e "  ${C}bash ${INSTALL_DIR}/${SCRIPT_NAME} --cron-check${NC}"
+    echo -e "  ${Y}Windows 提示:${NC}"
+    echo -e "  定时任务已通过 Task Scheduler 自动配置"
+    echo -e "  PowerShell 启动: ${C}${INSTALL_DIR}/sub-manager.ps1${NC}"
 fi
 echo ""
 

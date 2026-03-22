@@ -43,7 +43,18 @@ cron_check() {
     done <<< "$repo_list"
 }
 
+# ── Windows 调度变量（setup_cron/remove_cron 等都依赖这些）──
+_schtask_name="SubManager"
+_has_schtasks() { command -v schtasks &>/dev/null; }
+_win_path() { cygpath -w "$1" 2>/dev/null || echo "$1"; }
+_win_bash_path() { cygpath -w "${BASH:-$(command -v bash)}" 2>/dev/null || echo "bash.exe"; }
+
 setup_cron() {
+    if [[ "$OS_TYPE" == "windows" ]]; then
+        _has_schtasks || { echo -e "  ${Y}未找到 schtasks，无法创建计划任务${NC}"; return 1; }
+        schtasks /Query /TN "$_schtask_name" > /dev/null 2>&1 && return 1  # already exists
+        _setup_schtask; return $?
+    fi
     if ! _has_cron; then
         echo -e "  ${Y}当前平台不支持 crontab，请使用系统任务计划手动设置定时执行${NC}"
         return 1
@@ -57,12 +68,18 @@ setup_cron() {
 }
 
 remove_cron() {
+    if [[ "$OS_TYPE" == "windows" ]]; then
+        _has_schtasks || return 0
+        schtasks /Delete /F /TN "$_schtask_name" > /dev/null 2>&1 || true
+        rm -f "${INSTALL_DIR}/cron-check.bat"
+        return 0
+    fi
     _has_cron || return 0
     crontab -l 2>/dev/null | grep -v "sub-manager.sh" | crontab - 2>/dev/null
 }
 
 # ══════════════════════════════════════════════════════════
-#  保活机制 (跨平台: launchd / systemd / cron)
+#  保活机制 (跨平台: launchd / systemd / cron / schtasks)
 # ══════════════════════════════════════════════════════════
 
 _launchd_plist="${HOME}/Library/LaunchAgents/com.sub-manager.plist"
@@ -70,9 +87,29 @@ _systemd_dir="${HOME}/.config/systemd/user"
 _systemd_svc="${_systemd_dir}/sub-manager.service"
 _systemd_timer="${_systemd_dir}/sub-manager.timer"
 
+# 创建 cron-check.bat 包装脚本并向 Task Scheduler 注册每分钟触发
+_setup_schtask() {
+    local bat_file="${INSTALL_DIR}/cron-check.bat"
+    local bash_exe; bash_exe=$(_win_bash_path)
+    local script_win; script_win=$(_win_path "${INSTALL_DIR}/sub-manager.sh")
+    local log_win;    log_win=$(_win_path "${LOG_DIR}/cron.log")
+    printf '@echo off\n"%s" -l "%s" --cron-check >> "%s" 2>&1\n' \
+        "$bash_exe" "$script_win" "$log_win" > "$bat_file"
+    local bat_win; bat_win=$(_win_path "$bat_file")
+    schtasks /Create /F /TN "$_schtask_name" \
+        /TR "\"$bat_win\"" \
+        /SC MINUTE /MO 1 /RL HIGHEST > /dev/null 2>&1
+}
+
 # 返回当前保活状态描述
 keepalive_status() {
     case "$OS_TYPE" in
+        windows)
+            if _has_schtasks && schtasks /Query /TN "$_schtask_name" > /dev/null 2>&1; then
+                echo -e "${G}Task Scheduler 运行中${NC}"
+            else
+                echo -e "${R}未启用${NC}"
+            fi ;;
         macos)
             if [[ -f "$_launchd_plist" ]] && \
                launchctl list 2>/dev/null | grep -q "com.sub-manager"; then
@@ -105,6 +142,18 @@ keepalive_status() {
 # 启用保活（自动选择最优方式）
 setup_keepalive() {
     case "$OS_TYPE" in
+        windows)
+            _has_schtasks || { echo -e "  ${R}✗ 未找到 schtasks.exe，无法创建计划任务${NC}"; return 1; }
+            if schtasks /Query /TN "$_schtask_name" > /dev/null 2>&1; then
+                echo -e "  ${Y}Task Scheduler 任务已存在${NC}"
+                return 0
+            fi
+            if _setup_schtask; then
+                echo -e "  ${G}✓ Task Scheduler 任务已创建 (每分钟, 开机自启)${NC}"
+            else
+                echo -e "  ${R}✗ Task Scheduler 任务创建失败${NC}"
+            fi
+            ;;
         macos)
             mkdir -p "${HOME}/Library/LaunchAgents"
             cat > "$_launchd_plist" << PLIST
@@ -178,6 +227,14 @@ TIMEREOF
 # 停止保活（清理所有方式）
 remove_keepalive() {
     local removed=false
+    # Windows Task Scheduler
+    if [[ "$OS_TYPE" == "windows" ]] && _has_schtasks; then
+        if schtasks /Query /TN "$_schtask_name" > /dev/null 2>&1; then
+            schtasks /Delete /F /TN "$_schtask_name" > /dev/null 2>&1 || true
+            rm -f "${INSTALL_DIR}/cron-check.bat"
+            removed=true
+        fi
+    fi
     # launchd
     if [[ -f "$_launchd_plist" ]]; then
         launchctl unload "$_launchd_plist" 2>/dev/null || true
@@ -280,6 +337,17 @@ system_settings() {
                 echo -ne "  保活状态: "; keepalive_status
                 echo ""
                 case "$OS_TYPE" in
+                    windows)
+                        echo -e "  ${C}Task Scheduler 任务:${NC} ${_schtask_name}"
+                        if _has_schtasks && schtasks /Query /TN "$_schtask_name" > /dev/null 2>&1; then
+                            echo -e "  已注册 ✓"
+                            echo ""
+                            schtasks /Query /TN "$_schtask_name" /FO LIST 2>/dev/null | grep -E "任务名称|状态|下次运行时间|Task Name|Status|Next Run" || true
+                        else
+                            echo -e "  ${Y}未注册${NC}"
+                        fi
+                        [[ -f "${INSTALL_DIR}/cron-check.bat" ]] && \
+                            echo -e "  包装脚本: ${INSTALL_DIR}/cron-check.bat" ;;
                     macos)
                         echo -e "  ${C}LaunchAgent:${NC} ${_launchd_plist}"
                         [[ -f "$_launchd_plist" ]] && \

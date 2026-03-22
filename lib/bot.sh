@@ -501,8 +501,20 @@ bot_menu() {
                 if bot_is_running; then
                     echo -e "  ${Y}Bot 已在运行 (PID=$(cat "$BOT_PID_FILE"))${NC}"
                 else
-                    nohup bash "${INSTALL_DIR}/sub-manager.sh" --bot \
-                        >> "${LOG_DIR}/bot.log" 2>&1 &
+                    if [[ "$OS_TYPE" == "windows" ]]; then
+                        local _bexe; _bexe=$(_win_bash_path)
+                        local _bscript; _bscript=$(_win_path "${INSTALL_DIR}/sub-manager.sh")
+                        local _blog; _blog=$(_win_path "${LOG_DIR}/bot.log")
+                        powershell.exe -NonInteractive -WindowStyle Hidden \
+                            -Command "Start-Process -FilePath '$_bexe' \
+                                -ArgumentList '-l','$_bscript','--bot' \
+                                -RedirectStandardOutput '$_blog' \
+                                -RedirectStandardError '$_blog' \
+                                -WindowStyle Hidden" > /dev/null 2>&1
+                    else
+                        nohup bash "${INSTALL_DIR}/sub-manager.sh" --bot \
+                            >> "${LOG_DIR}/bot.log" 2>&1 &
+                    fi
                     sleep 1
                     bot_is_running && \
                         echo -e "  ${G}✓ Bot 已在后台启动${NC}" || \

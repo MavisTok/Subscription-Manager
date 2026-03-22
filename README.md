@@ -29,6 +29,7 @@ bash <(curl -fsSL --connect-timeout 8 --max-time 30 https://raw.githubuserconten
 
 > 需要 Git Bash，`curl` / `git` / `jq` 通常已内置。
 > 安装目录：`~/.sub-manager`
+> 安装时自动通过 **Task Scheduler** 配置每分钟定时检查（开机自启）。
 
 ---
 
@@ -43,6 +44,16 @@ bash <(curl -fsSL --connect-timeout 8 --max-time 30 https://raw.githubuserconten
 bash /opt/sub-manager/sub-manager.sh   # 直接运行
 subm                                    # 全局别名（重新登录后生效）
 su                                      # 安装时选择了 su 重定向后可用
+```
+
+**Windows 额外启动方式：**
+
+```powershell
+# PowerShell（无需手动传 bash 路径）
+~/.sub-manager/sub-manager.ps1
+
+# Git Bash
+bash ~/.sub-manager/sub-manager.sh
 ```
 
 ---
@@ -207,7 +218,7 @@ sub-manager.sh --check-update    # 只检查是否有新版本
 | Linux (root) | Arch / Manjaro | pacman | `/opt/sub-manager` |
 | Linux (non-root) | 任意 | 同上 | `~/.sub-manager` |
 | macOS | Homebrew | brew | `~/.sub-manager` |
-| Windows | Git Bash / WSL | winget / 手动 | `~/.sub-manager` |
+| Windows | Git Bash / WSL (Task Scheduler 自动配置定时任务) | winget / 手动 | `~/.sub-manager` |
 | **OpenWrt** | 21.02 及以上 | opkg | `/opt/sub-manager` |
 
 依赖：`curl` `git` `jq`（自动安装，Linux 支持阿里云 / 清华 / 中科大 / 华为云镜像回退）

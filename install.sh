@@ -619,18 +619,28 @@ echo -e "  ${G}✓ 已安装到 ${INSTALL_DIR}/${SCRIPT_NAME}${NC}"
 echo ""
 echo -e "  ${W}[4/5] 配置快捷命令...${NC}"
 
-cat > /etc/profile.d/sub-manager.sh << PROFILEEOF
+if [[ "$OS_TYPE" == "linux" && -d /etc/profile.d ]]; then
+    cat > /etc/profile.d/sub-manager.sh << PROFILEEOF
 # Sub Manager - 订阅管理工具
 alias subm='${INSTALL_DIR}/${SCRIPT_NAME}'
 PROFILEEOF
-chmod +x /etc/profile.d/sub-manager.sh
-echo -e "  ${G}✓ 添加全局别名 subm (重新登录后生效)${NC}"
+    chmod +x /etc/profile.d/sub-manager.sh
+    echo -e "  ${G}✓ 添加全局别名 subm (重新登录后生效)${NC}"
+fi
 
-for rc in /root/.bashrc /root/.zshrc; do
+# 写入用户 rc 文件（Linux root 写 /root/*, macOS/普通用户写 $HOME/*）
+if [[ "$OS_TYPE" == "linux" && "${EUID:-$(id -u)}" -eq 0 ]]; then
+    RC_FILES=("/root/.bashrc" "/root/.zshrc")
+else
+    RC_FILES=("${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.bash_profile")
+fi
+
+for rc in "${RC_FILES[@]}"; do
     if [[ -f "$rc" ]] && ! grep -q "sub-manager" "$rc" 2>/dev/null; then
         echo "" >> "$rc"
         echo "# Sub Manager" >> "$rc"
         echo "alias subm='${INSTALL_DIR}/${SCRIPT_NAME}'" >> "$rc"
+        echo -e "  ${G}✓ 已写入 $rc${NC}"
     fi
 done
 

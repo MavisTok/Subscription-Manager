@@ -5,7 +5,7 @@
 #  平台: Linux / macOS / Windows (Git Bash / WSL)
 # ============================================================
 
-readonly VERSION="1.3.1"
+readonly VERSION="1.3.2"
 readonly GITHUB_RAW="https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main"
 readonly GITHUB_RAW_PROXY="https://ghfast.top/${GITHUB_RAW}"
 
@@ -1238,33 +1238,56 @@ push_to_github() {
 # ══════════════════════════════════════════════════════════
 
 # run_task <task_id> <verbose=false>
+#
+# 完整执行流程:
+#   1. 拉取订阅
+#      - 成功 → 继续推送
+#      - 失败 → 检查本地缓存
+#        ├─ 有缓存 → 继续推送（push_to_github 内部会与云端对比，无变化自动跳过）
+#        └─ 无缓存 → 记录日志，结束
+#   2. 推送到所有关联 GitHub 仓库（云端相同则自动跳过）
+#   3. 发送通知（未配置或发送失败不影响整体流程）
 run_task() {
     local task_id="$1" verbose="${2:-false}"
     local task_name; task_name=$(jq -r --argjson id "$task_id" \
         '.tasks[] | select(.id==$id) | .name' "$TASKS_FILE")
+    local local_file="${DATA_DIR}/task_${task_id}.txt"
 
+    # ── 步骤 1: 拉取订阅 ────────────────────────────────────
+    local fetch_ok=false
     if fetch_task "$task_id" "$verbose"; then
-        send_notification "拉取成功" "任务「${task_name}」订阅已更新"
-
-        # Push to all repos that reference this task
-        local repo_ids
-        repo_ids=$(jq -r --argjson tid "$task_id" \
-            '.repos[] | select(.task_ids | contains([$tid])) | .id' "$REPOS_FILE")
-
-        while IFS= read -r rid; do
-            [[ -z "$rid" ]] && continue
-            local rname; rname=$(jq -r --argjson id "$rid" \
-                '.repos[] | select(.id==$id) | .name' "$REPOS_FILE")
-
-            if push_to_github "$rid" "$task_id" "$verbose"; then
-                send_notification "推送成功" "任务「${task_name}」已推送至仓库「${rname}」"
-            else
-                send_notification "推送失败" "任务「${task_name}」推送至仓库「${rname}」失败，请检查配置"
-            fi
-        done <<< "$repo_ids"
+        fetch_ok=true
     else
-        send_notification "拉取失败" "任务「${task_name}」订阅拉取失败，请检查链接是否有效"
-        return 1
+        if [[ -f "$local_file" ]]; then
+            [[ "$verbose" == "true" ]] && \
+                echo -e "  ${Y}⚠ 拉取失败，使用本地缓存继续推送流程${NC}"
+            log "WARN" "Fetch failed, fallback to local cache: task=$task_id"
+        else
+            [[ "$verbose" == "true" ]] && \
+                echo -e "  ${R}✗ 拉取失败且无本地缓存，终止流程${NC}"
+            log "ERROR" "Fetch failed, no local cache: task=$task_id"
+            send_notification "拉取失败" "任务「${task_name}」拉取失败且无本地缓存" 2>/dev/null || true
+            return 1
+        fi
+    fi
+
+    # ── 步骤 2: 推送到关联 GitHub 仓库 ──────────────────────
+    # push_to_github 内部已做云端对比，文件相同时自动跳过
+    local repo_ids
+    repo_ids=$(jq -r --argjson tid "$task_id" \
+        '.repos[] | select(.task_ids | contains([$tid])) | .id' "$REPOS_FILE")
+
+    while IFS= read -r rid; do
+        [[ -z "$rid" ]] && continue
+        push_to_github "$rid" "$task_id" "$verbose" || true
+    done <<< "$repo_ids"
+
+    # ── 步骤 3: 发送通知（失败不中断流程）──────────────────
+    if [[ "$fetch_ok" == "true" ]]; then
+        send_notification "拉取成功" "任务「${task_name}」订阅已更新" 2>/dev/null || true
+    else
+        send_notification "拉取失败(缓存推送)" \
+            "任务「${task_name}」拉取失败，已用本地缓存推送至 GitHub" 2>/dev/null || true
     fi
 }
 

@@ -5,7 +5,7 @@
 #  平台: Linux / macOS / Windows (Git Bash / WSL)
 # ============================================================
 
-readonly VERSION="1.3.3"
+readonly VERSION="1.3.4"
 readonly GITHUB_RAW="https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main"
 readonly GITHUB_RAW_PROXY="https://ghfast.top/${GITHUB_RAW}"
 
@@ -513,8 +513,17 @@ repo_edit() {
     new_filename=$(read_input "推送路径 (支持子目录)" "$cur_filename")
 
     echo ""
-    jq -r '.tasks[] | "  [\(.id)] \(.name)"' "$TASKS_FILE"
-    new_task_ids_str=$(read_input "关联任务 ID" "$cur_task_ids")
+    echo -e "  ${W}可用任务:${NC}"
+    while IFS=$'\t' read -r tid tname; do
+        if echo ",$cur_task_ids," | grep -qF ",$tid,"; then
+            echo -e "  ${G}[${tid}] ${tname}  ← 已关联${NC}"
+        else
+            echo -e "  ${C}[${tid}]${NC} ${tname}"
+        fi
+    done < <(jq -r '.tasks[] | [(.id|tostring), .name] | @tsv' "$TASKS_FILE")
+    echo -e "  ${Y}当前关联: ${cur_task_ids:-无}${NC}"
+    echo ""
+    new_task_ids_str=$(read_input "关联任务 ID (多个用逗号分隔)" "$cur_task_ids")
 
     local new_push_interval_str; new_push_interval_str=$(read_input "定时推送间隔(分钟, 0=跟随任务)" "$cur_push_interval")
     local new_push_interval=0

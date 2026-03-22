@@ -364,15 +364,15 @@ task_menu() {
         print_header "拉取任务管理"
         local cnt; cnt=$(jq '.tasks | length' "$TASKS_FILE")
         echo -e "  ${Y}当前任务数: $cnt${NC}\n"
-        echo "  1. 查看所有任务"
-        echo "  2. 添加任务"
-        echo "  3. 编辑任务"
-        echo "  4. 删除任务"
-        echo "  5. 启用/禁用任务"
-        echo "  6. 导出任务配置"
-        echo "  7. 导入任务配置"
-        echo "  8. 立即执行任务"
-        echo "  0. 返回主菜单"
+        echo -e "  ${C}1.${NC} 查看所有任务"
+        echo -e "  ${C}2.${NC} 添加任务"
+        echo -e "  ${C}3.${NC} 编辑任务"
+        echo -e "  ${C}4.${NC} 删除任务"
+        echo -e "  ${C}5.${NC} 启用/禁用任务"
+        echo -e "  ${C}6.${NC} 导出任务配置"
+        echo -e "  ${C}7.${NC} 导入任务配置"
+        echo -e "  ${C}8.${NC} 立即执行任务"
+        echo -e "  ${C}0.${NC} 返回主菜单"
         echo ""
         local choice; choice=$(read_input "请选择")
         case "$choice" in
@@ -399,12 +399,15 @@ repo_list() {
     fi
 
     jq -r '.repos[] | [.id, .name, .github_url, .branch,
-        (.task_ids|map(tostring)|join(",")), .filename] | @tsv' "$REPOS_FILE" | \
-    while IFS=$'\t' read -r id name url branch task_ids filename; do
-        echo -e "  ${W}[$id] $name${NC}"
+        (.task_ids|map(tostring)|join(",")), .filename,
+        ((.push_interval // 0) | tostring)] | @tsv' "$REPOS_FILE" | \
+    while IFS=$'\t' read -r id name url branch task_ids filename push_interval; do
+        local push_info="跟随任务"
+        [[ "$push_interval" -gt 0 ]] 2>/dev/null && push_info="每 ${push_interval} 分钟"
+        echo -e "  ${C}[$id]${NC} ${W}$name${NC}"
         echo -e "      仓库: ${C}$url${NC}"
         echo -e "      分支: $branch  |  文件名: ${W}$filename${NC}"
-        echo -e "      关联任务IDs: $task_ids"
+        echo -e "      关联任务IDs: $task_ids  |  定时推送: $push_info"
         print_line
     done
     press_enter
@@ -441,20 +444,41 @@ repo_add() {
     task_ids_json=$(echo "$task_ids_str" | tr ',' '\n' | grep -E '^[0-9]+$' | \
         jq -R 'tonumber' | jq -s '.')
 
+    echo ""
+    local push_interval_str; push_interval_str=$(read_input "定时推送间隔(分钟, 0=跟随任务定时)" "0")
+    local push_interval=0
+    [[ "$push_interval_str" =~ ^[0-9]+$ ]] && push_interval=$push_interval_str
+
     local id; id=$(jq '.next_id' "$REPOS_FILE")
     local tmp; tmp=$(mktemp)
     jq --argjson id "$id" \
        --arg name "$name" --arg url "$github_url" \
        --arg token "$token" --arg branch "$branch" \
        --arg filename "$filename" --argjson task_ids "$task_ids_json" \
+       --argjson push_interval "$push_interval" \
        '.repos += [{
            "id":$id,"name":$name,"github_url":$url,
            "token":$token,"branch":$branch,
-           "filename":$filename,"task_ids":$task_ids
+           "filename":$filename,"task_ids":$task_ids,
+           "push_interval":$push_interval,"last_push":0
        }] | .next_id += 1' "$REPOS_FILE" > "$tmp" && mv "$tmp" "$REPOS_FILE"
 
     echo -e "\n  ${G}✓ 仓库 \"$name\" 添加成功 (ID: $id)${NC}"
-    log "INFO" "Repo added: id=$id name=$name"
+    log "INFO" "Repo added: id=$id name=$name push_interval=${push_interval}m"
+
+    # 立即测试连通性
+    echo ""
+    local repo_path; repo_path=$(echo "$github_url" | sed 's|https://github.com/||;s|\.git$||')
+    local auth_url="https://x-access-token:${token}@github.com/${repo_path}.git"
+    echo -ne "  测试推送连通性... "
+    if git ls-remote --quiet "$auth_url" HEAD > /dev/null 2>&1; then
+        echo -e "${G}✓ Token 有效，可以推送${NC}"
+        if [[ "$push_interval" -gt 0 ]]; then
+            echo -e "  ${G}定时推送已配置: 每 ${push_interval} 分钟推送一次${NC}"
+        fi
+    else
+        echo -e "${R}✗ 连接失败，请检查 Token 权限和仓库地址${NC}"
+    fi
     press_enter
 }
 
@@ -475,6 +499,7 @@ repo_edit() {
     cur_branch=$(echo "$repo" | jq -r '.branch')
     cur_filename=$(echo "$repo" | jq -r '.filename')
     cur_task_ids=$(echo "$repo" | jq -r '.task_ids | map(tostring) | join(",")')
+    local cur_push_interval; cur_push_interval=$(echo "$repo" | jq -r '(.push_interval // 0) | tostring')
 
     local new_name new_url new_token new_branch new_filename new_task_ids_str
     new_name=$(read_input "名称" "$cur_name")
@@ -491,6 +516,10 @@ repo_edit() {
     jq -r '.tasks[] | "  [\(.id)] \(.name)"' "$TASKS_FILE"
     new_task_ids_str=$(read_input "关联任务 ID" "$cur_task_ids")
 
+    local new_push_interval_str; new_push_interval_str=$(read_input "定时推送间隔(分钟, 0=跟随任务)" "$cur_push_interval")
+    local new_push_interval=0
+    [[ "$new_push_interval_str" =~ ^[0-9]+$ ]] && new_push_interval=$new_push_interval_str
+
     local new_task_ids_json
     new_task_ids_json=$(echo "$new_task_ids_str" | tr ',' '\n' | grep -E '^[0-9]+$' | \
         jq -R 'tonumber' | jq -s '.')
@@ -500,9 +529,11 @@ repo_edit() {
        --arg name "$new_name" --arg url "$new_url" --arg token "$new_token" \
        --arg branch "$new_branch" --arg filename "$new_filename" \
        --argjson task_ids "$new_task_ids_json" \
+       --argjson push_interval "$new_push_interval" \
        '(.repos[] | select(.id==$id)) |= . + {
            "name":$name,"github_url":$url,"token":$token,
-           "branch":$branch,"filename":$filename,"task_ids":$task_ids
+           "branch":$branch,"filename":$filename,"task_ids":$task_ids,
+           "push_interval":$push_interval
        }' "$REPOS_FILE" > "$tmp" && mv "$tmp" "$REPOS_FILE"
 
     echo -e "\n  ${G}✓ 仓库已更新${NC}"
@@ -533,22 +564,62 @@ repo_delete() {
     press_enter
 }
 
+repo_test_connection() {
+    clear_screen
+    print_header "测试推送连通性"
+
+    local count; count=$(jq '.repos | length' "$REPOS_FILE")
+    if [[ "$count" -eq 0 ]]; then
+        echo -e "  ${Y}暂无仓库配置${NC}"; press_enter; return
+    fi
+
+    jq -r '.repos[] | "  [\(.id)] \(.name)"' "$REPOS_FILE"
+    echo ""
+    local id; id=$(read_input "请输入要测试的仓库 ID")
+    local repo; repo=$(jq --argjson id "$id" '.repos[] | select(.id==$id)' "$REPOS_FILE" 2>/dev/null)
+    if [[ -z "$repo" ]]; then
+        echo -e "  ${R}未找到 ID=$id 的仓库${NC}"; press_enter; return
+    fi
+
+    local repo_name github_url token
+    repo_name=$(echo "$repo" | jq -r '.name')
+    github_url=$(echo "$repo" | jq -r '.github_url')
+    token=$(echo "$repo" | jq -r '.token')
+
+    local repo_path; repo_path=$(echo "$github_url" | sed 's|https://github.com/||;s|\.git$||')
+    local auth_url="https://x-access-token:${token}@github.com/${repo_path}.git"
+
+    echo ""
+    echo -ne "  测试连接 \"${repo_name}\"... "
+    if git ls-remote --quiet "$auth_url" HEAD > /dev/null 2>&1; then
+        echo -e "${G}✓ Token 有效，可以推送${NC}"
+        log "INFO" "Repo test OK: id=$id name=$repo_name"
+    else
+        echo -e "${R}✗ 连接失败${NC}"
+        echo -e "  ${Y}请检查: Token 权限(Contents→Read/Write) 和 仓库地址是否正确${NC}"
+        log "WARN" "Repo test FAIL: id=$id name=$repo_name"
+    fi
+    press_enter
+}
+
 repo_menu() {
     while true; do
         clear_screen
         print_header "GitHub 仓库管理"
         local cnt; cnt=$(jq '.repos | length' "$REPOS_FILE")
         echo -e "  ${Y}当前仓库数: $cnt${NC}\n"
-        echo "  1. 查看所有仓库"
-        echo "  2. 添加仓库"
-        echo "  3. 编辑仓库"
-        echo "  4. 删除仓库"
-        echo "  0. 返回主菜单"
+        echo -e "  ${C}1.${NC} 查看所有仓库"
+        echo -e "  ${C}2.${NC} 添加仓库"
+        echo -e "  ${C}3.${NC} 编辑仓库"
+        echo -e "  ${C}4.${NC} 删除仓库"
+        echo -e "  ${C}5.${NC} 测试推送连通性"
+        echo -e "  ${C}0.${NC} 返回主菜单"
         echo ""
         local choice; choice=$(read_input "请选择")
         case "$choice" in
             1) repo_list ;; 2) repo_add ;;
             3) repo_edit ;; 4) repo_delete ;;
+            5) repo_test_connection ;;
             0) return ;;
             *) echo -e "  ${R}无效选项${NC}"; sleep 1 ;;
         esac
@@ -672,11 +743,11 @@ notify_menu() {
         print_header "消息推送配置"
         notify_show_status
         echo ""
-        echo "  1. 配置 Telegram"
-        echo "  2. 配置 Bark (iOS)"
-        echo "  3. 配置 Webhook"
-        echo "  4. 发送测试消息"
-        echo "  0. 返回主菜单"
+        echo -e "  ${C}1.${NC} 配置 Telegram"
+        echo -e "  ${C}2.${NC} 配置 Bark (iOS)"
+        echo -e "  ${C}3.${NC} 配置 Webhook"
+        echo -e "  ${C}4.${NC} 发送测试消息"
+        echo -e "  ${C}0.${NC} 返回主菜单"
         echo ""
         local choice; choice=$(read_input "请选择")
         case "$choice" in
@@ -760,9 +831,9 @@ proxy_menu() {
         echo -e "  全局代理: $status_label"
         [[ -n "$cur_proxy" ]] && echo -e "  地址:     ${C}${cur_proxy}${NC}"
         echo ""
-        echo "  1. 配置全局代理"
-        echo "  2. 测试代理连通性"
-        echo "  0. 返回主菜单"
+        echo -e "  ${C}1.${NC} 配置全局代理"
+        echo -e "  ${C}2.${NC} 测试代理连通性"
+        echo -e "  ${C}0.${NC} 返回主菜单"
         echo ""
         local choice; choice=$(read_input "请选择")
         case "$choice" in
@@ -1083,6 +1154,10 @@ push_to_github() {
             git push --quiet "$auth_url" "$branch"
             [[ "$verbose" == "true" ]] && echo -e "  ${G}✓ 推送成功${NC}"
             log "INFO" "Push OK: repo=$repo_id task=$task_id"
+            local _now _tmpj; _now=$(date +%s); _tmpj=$(mktemp)
+            jq --argjson id "$repo_id" --argjson ts "$_now" \
+               '(.repos[] | select(.id==$id)) |= . + {"last_push":$ts}' \
+               "$REPOS_FILE" > "$_tmpj" && mv "$_tmpj" "$REPOS_FILE"
         else
             # Branch doesn't exist yet — init and push
             git init --quiet "$tmp_git"
@@ -1096,6 +1171,10 @@ push_to_github() {
             git push --quiet -u origin "HEAD:${branch}"
             [[ "$verbose" == "true" ]] && echo -e "  ${G}✓ 初始化推送成功${NC}"
             log "INFO" "Push initial OK: repo=$repo_id task=$task_id"
+            local _now _tmpj; _now=$(date +%s); _tmpj=$(mktemp)
+            jq --argjson id "$repo_id" --argjson ts "$_now" \
+               '(.repos[] | select(.id==$id)) |= . + {"last_push":$ts}' \
+               "$REPOS_FILE" > "$_tmpj" && mv "$_tmpj" "$REPOS_FILE"
         fi
     ) || ret=$?
 
@@ -1174,6 +1253,8 @@ run_task_interactive() {
 
 cron_check() {
     local now; now=$(date +%s)
+
+    # ── 拉取任务调度 ──────────────────────────────────────────
     local task_list
     task_list=$(jq -r '.tasks[] | select(.enabled==true) | [.id,.interval,.last_run] | @tsv' "$TASKS_FILE")
 
@@ -1186,6 +1267,27 @@ cron_check() {
             run_task "$task_id" "false"
         fi
     done <<< "$task_list"
+
+    # ── 仓库独立定时推送调度 ──────────────────────────────────
+    local repo_list
+    repo_list=$(jq -r '.repos[] | select((.push_interval // 0) > 0) |
+        [.id, (.push_interval // 0), (.last_push // 0),
+         (.task_ids | map(tostring) | join(","))] | @tsv' "$REPOS_FILE" 2>/dev/null)
+
+    while IFS=$'\t' read -r repo_id push_interval last_push task_ids_csv; do
+        [[ -z "$repo_id" ]] && continue
+        local interval_secs=$(( push_interval * 60 ))
+        local elapsed=$(( now - last_push ))
+        if [[ "$elapsed" -ge "$interval_secs" ]]; then
+            log "INFO" "Repo push trigger: repo=$repo_id (elapsed=${elapsed}s)"
+            IFS=',' read -ra tids <<< "$task_ids_csv"
+            for tid in "${tids[@]}"; do
+                [[ -z "$tid" ]] && continue
+                [[ -f "${DATA_DIR}/task_${tid}.txt" ]] || continue
+                push_to_github "$repo_id" "$tid" "false"
+            done
+        fi
+    done <<< "$repo_list"
 }
 
 setup_cron() {
@@ -1214,11 +1316,11 @@ view_logs() {
     while true; do
         clear_screen
         print_header "日志查看"
-        echo "  1. 综合日志 (最近50条)"
-        echo "  2. 错误日志"
-        echo "  3. 定时任务日志"
-        echo "  4. 清空所有日志"
-        echo "  0. 返回主菜单"
+        echo -e "  ${C}1.${NC} 综合日志 (最近50条)"
+        echo -e "  ${C}2.${NC} 错误日志"
+        echo -e "  ${C}3.${NC} 定时任务日志"
+        echo -e "  ${C}4.${NC} 清空所有日志"
+        echo -e "  ${C}0.${NC} 返回主菜单"
         echo ""
         local choice; choice=$(read_input "请选择")
         case "$choice" in
@@ -1396,12 +1498,12 @@ system_settings() {
         echo -e "  安装目录:   ${INSTALL_DIR}"
         echo -e "  定时任务:   $cron_status"
         echo ""
-        echo "  1. 检查并更新"
-        echo "  2. 回滚到上一版本"
-        echo "  3. 启用定时任务"
-        echo "  4. 禁用定时任务"
-        echo "  5. 查看 Crontab"
-        echo "  0. 返回主菜单"
+        echo -e "  ${C}1.${NC} 检查并更新"
+        echo -e "  ${C}2.${NC} 回滚到上一版本"
+        echo -e "  ${C}3.${NC} 启用定时任务"
+        echo -e "  ${C}4.${NC} 禁用定时任务"
+        echo -e "  ${C}5.${NC} 查看 Crontab"
+        echo -e "  ${C}0.${NC} 返回主菜单"
         echo ""
         local choice; choice=$(read_input "请选择")
         case "$choice" in
@@ -1458,14 +1560,14 @@ main_menu() {
             echo -e "  ${G}★ 发现新版本 ${new_ver}，前往「系统设置」→「检查并更新」${NC}"
         fi
         echo ""
-        echo -e "  ${W}1.${NC} 拉取任务管理"
-        echo -e "  ${W}2.${NC} GitHub 仓库配置"
-        echo -e "  ${W}3.${NC} 消息推送配置"
-        echo -e "  ${W}4.${NC} 拉取代理配置"
-        echo -e "  ${W}5.${NC} 立即执行任务"
-        echo -e "  ${W}6.${NC} 查看日志"
-        echo -e "  ${W}7.${NC} 系统设置"
-        echo -e "  ${W}0.${NC} 退出"
+        echo -e "  ${C}1.${NC} 拉取任务管理"
+        echo -e "  ${C}2.${NC} GitHub 仓库配置"
+        echo -e "  ${C}3.${NC} 消息推送配置"
+        echo -e "  ${C}4.${NC} 拉取代理配置"
+        echo -e "  ${C}5.${NC} 立即执行任务"
+        echo -e "  ${C}6.${NC} 查看日志"
+        echo -e "  ${C}7.${NC} 系统设置"
+        echo -e "  ${C}0.${NC} 退出"
         echo ""
 
         local choice; choice=$(read_input "请选择")

@@ -154,20 +154,12 @@ case "${1:-}" in
         ;;
     *)
         if [[ -t 0 ]]; then
-            (
-                local flag="/tmp/sub-manager-update-available"
-                local tmp; tmp=$(mktemp)
-                if _fetch_raw "sub-manager.sh" "$tmp" 2>/dev/null; then
-                    local rv; rv=$(grep -m1 '^readonly VERSION=' "$tmp" | cut -d'"' -f2)
-                    if [[ -n "$rv" ]] && _ver_gt "$rv" "$VERSION"; then
-                        echo "$rv" > "$flag"
-                    else
-                        rm -f "$flag"
-                    fi
-                fi
-                rm -f "$tmp"
-            ) &>/dev/null &
-            main_menu
+            clear_screen
+            if update_prompt_on_start; then
+                update_do
+            else
+                main_menu
+            fi
         else
             echo "非交互模式下请使用参数，运行 $0 --help 查看帮助"
             exit 1

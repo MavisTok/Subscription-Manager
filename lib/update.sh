@@ -23,6 +23,57 @@ _fetch_raw() {
         "${GITHUB_RAW_PROXY}/${path}" -o "$out" 2>/dev/null
 }
 
+# update_prompt_on_start
+# 启动时前台检查更新，发现新版本则提示用户选择更新或跳过
+# 返回 0=用户选择立即更新, 1=无更新或跳过
+update_prompt_on_start() {
+    local flag="/tmp/sub-manager-update-available"
+    local tmp; tmp=$(mktemp)
+
+    echo -ne "  ${C}检查更新中...${NC}"
+
+    # 使用较短超时避免启动等待过久
+    local ok=0
+    curl -fsSL --connect-timeout 5 --max-time 15 \
+        "${GITHUB_RAW}/sub-manager.sh" -o "$tmp" 2>/dev/null && ok=1
+    if [[ "$ok" -eq 0 ]]; then
+        curl -fsSL --connect-timeout 5 --max-time 15 \
+            "${GITHUB_RAW_PROXY}/sub-manager.sh" -o "$tmp" 2>/dev/null && ok=1
+    fi
+
+    if [[ "$ok" -eq 0 ]]; then
+        echo -e "  ${Y}网络不可达，跳过${NC}"
+        rm -f "$tmp"; return 1
+    fi
+
+    local remote_ver
+    remote_ver=$(grep -m1 '^readonly VERSION=' "$tmp" | cut -d'"' -f2)
+    rm -f "$tmp"
+
+    if [[ -z "$remote_ver" ]]; then
+        echo -e "  ${Y}版本解析失败，跳过${NC}"
+        return 1
+    fi
+
+    if ! _ver_gt "$remote_ver" "$VERSION"; then
+        echo -e "  ${G}已是最新版本 (${VERSION})${NC}"
+        rm -f "$flag"
+        sleep 1
+        return 1
+    fi
+
+    # 发现新版本
+    echo "$remote_ver" > "$flag"
+    echo ""
+    echo -e "  ${G}★ 发现新版本 v${remote_ver}${NC}（当前 v${VERSION}）"
+    echo ""
+    echo -e "  ${C}1.${NC} 立即更新"
+    echo -e "  ${C}0.${NC} 跳过，进入主界面"
+    echo ""
+    local choice; choice=$(read_input "请选择")
+    [[ "$choice" == "1" ]]
+}
+
 # update_check [silent]
 # silent=true 时只在有更新时输出，用于主菜单静默检查
 update_check() {

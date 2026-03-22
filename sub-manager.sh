@@ -989,7 +989,8 @@ fetch_task() {
                '(.tasks[] | select(.id==$id)) |= . + {"last_run":$ts}' \
                "$TASKS_FILE" > "$tmpj" && mv "$tmpj" "$TASKS_FILE"
             [[ "$verbose" == "true" ]] && \
-                echo -e "  ${G}✓ 拉取成功 ($size 字节) [UA: $used_ua]${NC}"
+                echo -e "  ${G}✓ 拉取成功 ($size 字节) [UA: $used_ua]${NC}" && \
+                echo -e "  ${C}  → 已保存: $output_file${NC}"
             log "INFO" "Fetch OK: task=$task_id size=${size}B ua=$used_ua"
             ret=0
         else

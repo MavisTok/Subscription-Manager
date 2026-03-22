@@ -1,0 +1,55 @@
+#!/bin/bash
+# ============================================================
+#  Pre-commit hook: 自动 bump sub-manager.sh 的 PATCH 版本号
+#
+#  规则 (Semantic Versioning 2.0.0):
+#    MAJOR.MINOR.PATCH
+#    - PATCH (+1) : 每次提交自动执行（bug fix / 小改动）
+#    - MINOR (+1) : 新增向后兼容的功能，手动在提交前修改版本
+#    - MAJOR (+1) : 破坏性变更，手动在提交前修改版本
+#    手动修改版本后，本脚本不会再次自动 +PATCH（已检测到变化）
+# ============================================================
+
+SCRIPT="sub-manager.sh"
+
+# 仅当 sub-manager.sh 在暂存区时才处理
+if ! git diff --cached --name-only | grep -qE "^${SCRIPT}$"; then
+    exit 0
+fi
+
+# 读取当前版本
+current=$(grep -m1 "^readonly VERSION=" "$SCRIPT" 2>/dev/null | cut -d'"' -f2)
+if [[ -z "$current" ]]; then
+    echo "[hook] 未找到版本号，跳过自动 bump"
+    exit 0
+fi
+
+# 检查暂存内容中版本是否已被手动修改（与 HEAD 对比）
+head_ver=$(git show HEAD:"$SCRIPT" 2>/dev/null | grep -m1 "^readonly VERSION=" | cut -d'"' -f2)
+if [[ -n "$head_ver" && "$current" != "$head_ver" ]]; then
+    echo "[hook] 版本已手动修改: ${head_ver} → ${current}，跳过自动 bump"
+    exit 0
+fi
+
+# 解析版本号
+IFS='.' read -r major minor patch <<< "$current"
+if ! [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ && "$patch" =~ ^[0-9]+$ ]]; then
+    echo "[hook] 版本格式不符合 SemVer，跳过自动 bump"
+    exit 0
+fi
+
+# 自动 +PATCH
+patch=$(( patch + 1 ))
+new_version="${major}.${minor}.${patch}"
+
+# 跨平台 sed -i
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    sed -i '' "s/readonly VERSION=\"${current}\"/readonly VERSION=\"${new_version}\"/" "$SCRIPT"
+else
+    sed -i "s/readonly VERSION=\"${current}\"/readonly VERSION=\"${new_version}\"/" "$SCRIPT"
+fi
+
+# 重新暂存
+git add "$SCRIPT"
+
+echo "[hook] 版本自动 bump: ${current} → ${new_version} (PATCH)"

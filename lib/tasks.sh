@@ -194,10 +194,37 @@ task_export() {
     clear_screen
     print_header "导出任务配置"
 
+    if ! command -v openssl &>/dev/null; then
+        echo -e "  ${R}未检测到 openssl，无法加密导出${NC}"; press_enter; return
+    fi
+
     local export_file
-    export_file=$(read_input "导出文件路径" "/tmp/sub-tasks-$(date +%Y%m%d%H%M).json")
-    cp "$TASKS_FILE" "$export_file"
-    echo -e "\n  ${G}✓ 已导出到: $export_file${NC}"
+    export_file=$(read_input "导出文件路径" "${HOME}/sub-tasks-$(date +%Y%m%d%H%M).enc")
+    [[ -z "$export_file" ]] && { echo -e "  ${R}路径不能为空${NC}"; press_enter; return; }
+
+    echo ""
+    echo -e "  ${W}设置导出文件的加密密码${NC}（导入时需要此密码）"
+    local pass confirm_pass
+    pass=$(_read_pass "加密密码")
+    confirm_pass=$(_read_pass "确认密码")
+    if [[ "$pass" != "$confirm_pass" ]]; then
+        echo -e "  ${R}两次密码不一致${NC}"; press_enter; return
+    fi
+    if [[ -z "$pass" ]]; then
+        echo -e "  ${R}密码不能为空${NC}"; press_enter; return
+    fi
+
+    local tmp; tmp=$(mktemp)
+    cp "$TASKS_FILE" "$tmp"
+    if _file_encrypt "$tmp" "$export_file" "$pass"; then
+        rm -f "$tmp"
+        echo -e "\n  ${G}✓ 已加密导出到: $export_file${NC}"
+        echo -e "  ${Y}请妥善保管加密密码，导入时需要${NC}"
+        log "INFO" "Tasks exported (encrypted): $export_file"
+    else
+        rm -f "$tmp"
+        echo -e "\n  ${R}✗ 加密失败${NC}"; press_enter; return
+    fi
     press_enter
 }
 
@@ -209,11 +236,31 @@ task_import() {
     if [[ ! -f "$import_file" ]]; then
         echo -e "  ${R}文件不存在${NC}"; press_enter; return
     fi
+
+    # 解密到临时文件
+    local work_file
     if ! jq empty "$import_file" 2>/dev/null; then
-        echo -e "  ${R}无效的 JSON 文件${NC}"; press_enter; return
+        # 不是明文 JSON，尝试解密
+        if ! command -v openssl &>/dev/null; then
+            echo -e "  ${R}文件已加密但未检测到 openssl${NC}"; press_enter; return
+        fi
+        echo -e "  ${C}检测到加密文件，请输入导出时设置的密码${NC}"
+        local pass; pass=$(_read_pass "解密密码")
+        work_file=$(mktemp)
+        if ! _file_decrypt "$import_file" "$work_file" "$pass"; then
+            rm -f "$work_file"
+            echo -e "  ${R}✗ 解密失败，请确认密码正确${NC}"; press_enter; return
+        fi
+        if ! jq empty "$work_file" 2>/dev/null; then
+            rm -f "$work_file"
+            echo -e "  ${R}✗ 解密后内容无效${NC}"; press_enter; return
+        fi
+        echo -e "  ${G}✓ 解密成功${NC}"
+    else
+        work_file="$import_file"
     fi
 
-    local import_count; import_count=$(jq '.tasks | length' "$import_file" 2>/dev/null || echo 0)
+    local import_count; import_count=$(jq '.tasks | length' "$work_file" 2>/dev/null || echo 0)
     echo -e "  ${Y}文件包含 $import_count 个任务${NC}"
     echo ""
     echo "  导入模式:"
@@ -222,12 +269,15 @@ task_import() {
     local mode; mode=$(read_input "选择" "1")
 
     if [[ "$mode" == "2" ]]; then
-        confirm "确认替换所有现有任务?" || { echo "  已取消"; press_enter; return; }
-        cp "$import_file" "$TASKS_FILE"
+        confirm "确认替换所有现有任务?" || {
+            [[ "$work_file" != "$import_file" ]] && rm -f "$work_file"
+            echo "  已取消"; press_enter; return
+        }
+        cp "$work_file" "$TASKS_FILE"
     else
         local next_id; next_id=$(jq '.next_id' "$TASKS_FILE")
         local tmp; tmp=$(mktemp)
-        jq --slurpfile src "$import_file" --argjson base "$next_id" '
+        jq --slurpfile src "$work_file" --argjson base "$next_id" '
             .tasks += ($src[0].tasks | to_entries | map(
                 .value + {"id": ($base + .key), "last_run": 0}
             )) |
@@ -235,6 +285,7 @@ task_import() {
         ' "$TASKS_FILE" > "$tmp" && mv "$tmp" "$TASKS_FILE"
     fi
 
+    [[ "$work_file" != "$import_file" ]] && rm -f "$work_file"
     echo -e "\n  ${G}✓ 成功导入 $import_count 个任务${NC}"
     log "INFO" "Imported $import_count tasks from $import_file"
     press_enter

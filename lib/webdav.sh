@@ -54,20 +54,7 @@ _webdav_http_code() {
     fi
 }
 
-# _webdav_encrypt <in_file> <out_file> <passphrase>
-# AES-256-CBC 加密，与内部 _enc 算法一致
-_webdav_encrypt() {
-    local in="$1" out="$2" pass="$3"
-    openssl enc -aes-256-cbc -pbkdf2 -pass "pass:${pass}" \
-        -in "$in" -out "$out" 2>/dev/null
-}
-
-# _webdav_decrypt <in_file> <out_file> <passphrase>
-_webdav_decrypt() {
-    local in="$1" out="$2" pass="$3"
-    openssl enc -aes-256-cbc -pbkdf2 -d -pass "pass:${pass}" \
-        -in "$in" -out "$out" 2>/dev/null
-}
+# 加解密使用 core.sh 中的 _file_encrypt / _file_decrypt
 
 # ── 配置 WebDAV 服务器 ──────────────────────────────────────
 
@@ -238,7 +225,7 @@ webdav_backup() {
     # 2. 加密
     echo -ne "  ${C}加密...${NC} "
     local tmp_enc; tmp_enc=$(mktemp)
-    if ! _webdav_encrypt "$tmp_json" "$tmp_enc" "$bpass"; then
+    if ! _file_encrypt "$tmp_json" "$tmp_enc" "$bpass"; then
         echo -e "${R}✗ 加密失败${NC}"
         rm -f "$tmp_json" "$tmp_enc"; press_enter; return 1
     fi
@@ -303,7 +290,7 @@ webdav_restore() {
     # 2. 解密
     echo -ne "  ${C}解密...${NC} "
     local tmp_json; tmp_json=$(mktemp)
-    if ! _webdav_decrypt "$tmp_enc" "$tmp_json" "$bpass"; then
+    if ! _file_decrypt "$tmp_enc" "$tmp_json" "$bpass"; then
         echo -e "${R}✗ 解密失败，请确认备份加密密码正确${NC}"
         rm -f "$tmp_enc" "$tmp_json"; press_enter; return 1
     fi

@@ -203,6 +203,29 @@ _enc_migrate_configs() {
     fi
 }
 
+# ── 文件级加密工具（用于导出/导入/WebDAV备份） ─────────────
+# _file_encrypt <in_file> <out_file> <passphrase>
+_file_encrypt() {
+    local in="$1" out="$2" pass="$3"
+    openssl enc -aes-256-cbc -pbkdf2 -pass "pass:${pass}" \
+        -in "$in" -out "$out" 2>/dev/null
+}
+
+# _file_decrypt <in_file> <out_file> <passphrase>
+_file_decrypt() {
+    local in="$1" out="$2" pass="$3"
+    openssl enc -aes-256-cbc -pbkdf2 -d -pass "pass:${pass}" \
+        -in "$in" -out "$out" 2>/dev/null
+}
+
+# _read_pass <prompt>  — 读取密码（不回显）
+_read_pass() {
+    local prompt="${1:-密码}" pass
+    read -rsp "  ${prompt}: " pass
+    echo ""
+    printf '%s' "$pass"
+}
+
 # ── 初始化配置文件 ─────────────────────────────────────────
 init_configs() {
     mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"

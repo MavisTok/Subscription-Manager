@@ -5,7 +5,7 @@
 #  平台: Linux / macOS / Windows (Git Bash / WSL) / OpenWrt
 # ============================================================
 
-readonly VERSION="1.3.10"  # auto-managed by .githooks/pre-commit
+readonly VERSION="1.3.11"  # auto-managed by .githooks/pre-commit
 readonly GITHUB_RAW="https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main"
 readonly GITHUB_RAW_PROXY="https://ghfast.top/${GITHUB_RAW}"
 
@@ -27,6 +27,7 @@ else
     INSTALL_DIR="${HOME}/.sub-manager"
 fi
 readonly INSTALL_DIR
+readonly KEY_FILE="${INSTALL_DIR}/.keyfile"
 readonly CONFIG_DIR="${INSTALL_DIR}/config"
 readonly DATA_DIR="${INSTALL_DIR}/data"
 readonly LOG_DIR="${INSTALL_DIR}/logs"
@@ -99,6 +100,118 @@ confirm() {
     [[ "$(echo "$answer" | tr '[:upper:]' '[:lower:]')" == "y" ]]
 }
 
+# ══════════════════════════════════════════════════════════
+#  加密工具（AES-256-CBC, openssl）
+#  敏感字段在 JSON 中以 "enc:BASE64..." 格式存储
+# ══════════════════════════════════════════════════════════
+
+# 初始化密钥文件（首次运行自动生成随机密钥）
+_enc_init() {
+    command -v openssl &>/dev/null || return 1
+    if [[ ! -f "$KEY_FILE" ]]; then
+        openssl rand -hex 32 > "$KEY_FILE" 2>/dev/null || return 1
+        chmod 600 "$KEY_FILE" 2>/dev/null
+    fi
+    return 0
+}
+
+# 加密明文值，返回 "enc:BASE64..." 或原值（openssl 不可用时）
+_enc() {
+    local val="$1"
+    [[ -z "$val" || "$val" == "null" ]] && { echo "$val"; return; }
+    [[ "${val:0:4}" == "enc:" ]] && { echo "$val"; return; }  # 已加密
+    local key; key=$(cat "$KEY_FILE" 2>/dev/null)
+    [[ -z "$key" ]] && { echo "$val"; return; }  # 无密钥则原文返回
+    local out
+    out=$(printf '%s' "$val" | \
+        openssl enc -aes-256-cbc -pbkdf2 -pass "pass:${key}" -a -A 2>/dev/null) || {
+        echo "$val"; return
+    }
+    echo "enc:${out}"
+}
+
+# 解密值，返回明文；非加密值原样返回；解密失败返回空
+_dec() {
+    local val="$1"
+    [[ -z "$val" || "$val" == "null" ]] && { echo ""; return; }
+    [[ "${val:0:4}" != "enc:" ]] && { echo "$val"; return; }  # 未加密，原样返回
+    local encrypted="${val:4}"
+    local key; key=$(cat "$KEY_FILE" 2>/dev/null)
+    [[ -z "$key" ]] && { echo ""; return; }
+    printf '%s' "$encrypted" | \
+        openssl enc -aes-256-cbc -pbkdf2 -pass "pass:${key}" -a -A -d 2>/dev/null
+}
+
+# 脱敏显示：解密后取首4位+****+末2位
+_mask() {
+    local val; val=$(_dec "$1")
+    [[ -z "$val" ]] && { echo "（未设置）"; return; }
+    local len=${#val}
+    if   [[ $len -le 4 ]];  then echo "****"
+    elif [[ $len -le 8 ]];  then echo "${val:0:2}****"
+    else                          echo "${val:0:4}****${val: -2}"
+    fi
+}
+
+# 将现有配置文件中的明文敏感字段一次性加密（升级迁移）
+_enc_migrate_configs() {
+    _enc_init || return 0  # openssl 不可用则跳过
+
+    local tmp val enc_val
+
+    # tasks.json: url, headers
+    if [[ -f "$TASKS_FILE" ]]; then
+        local count; count=$(jq '.tasks | length' "$TASKS_FILE" 2>/dev/null || echo 0)
+        local i=0
+        while [[ $i -lt $count ]]; do
+            for field in url headers; do
+                val=$(jq -r ".tasks[$i].${field} // \"\"" "$TASKS_FILE" 2>/dev/null)
+                if [[ -n "$val" && "$val" != "null" && "${val:0:4}" != "enc:" ]]; then
+                    enc_val=$(_enc "$val")
+                    tmp=$(mktemp)
+                    jq --argjson idx "$i" --arg f "$field" --arg v "$enc_val" \
+                       '.tasks[$idx][$f] = $v' "$TASKS_FILE" > "$tmp" && mv "$tmp" "$TASKS_FILE"
+                fi
+            done
+            i=$((i+1))
+        done
+    fi
+
+    # repos.json: github_url, token
+    if [[ -f "$REPOS_FILE" ]]; then
+        local count; count=$(jq '.repos | length' "$REPOS_FILE" 2>/dev/null || echo 0)
+        local i=0
+        while [[ $i -lt $count ]]; do
+            for field in github_url token; do
+                val=$(jq -r ".repos[$i].${field} // \"\"" "$REPOS_FILE" 2>/dev/null)
+                if [[ -n "$val" && "$val" != "null" && "${val:0:4}" != "enc:" ]]; then
+                    enc_val=$(_enc "$val")
+                    tmp=$(mktemp)
+                    jq --argjson idx "$i" --arg f "$field" --arg v "$enc_val" \
+                       '.repos[$idx][$f] = $v' "$REPOS_FILE" > "$tmp" && mv "$tmp" "$REPOS_FILE"
+                fi
+            done
+            i=$((i+1))
+        done
+    fi
+
+    # notify.json: 五个敏感字段
+    if [[ -f "$NOTIFY_FILE" ]]; then
+        local fields=(".providers.telegram.token" ".providers.telegram.chat_id"
+                      ".providers.bark.key"        ".providers.bark.server"
+                      ".providers.webhook.url")
+        for jq_path in "${fields[@]}"; do
+            val=$(jq -r "${jq_path} // \"\"" "$NOTIFY_FILE" 2>/dev/null)
+            if [[ -n "$val" && "$val" != "null" && "${val:0:4}" != "enc:" ]]; then
+                enc_val=$(_enc "$val")
+                tmp=$(mktemp)
+                jq --arg v "$enc_val" "(${jq_path}) = \$v" "$NOTIFY_FILE" > "$tmp" \
+                    && mv "$tmp" "$NOTIFY_FILE"
+            fi
+        done
+    fi
+}
+
 # ── 初始化配置文件 ─────────────────────────────────────────
 init_configs() {
     mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
@@ -120,6 +233,8 @@ NOTIFYEOF
   "fetch_proxy_enabled": false
 }
 SETTINGSEOF
+    _enc_init
+    _enc_migrate_configs
 }
 
 # ══════════════════════════════════════════════════════════
@@ -154,7 +269,7 @@ task_list() {
     local detail_id; detail_id=$(read_input "任务ID")
     if [[ -n "$detail_id" ]]; then
         local url last_run
-        url=$(jq -r --argjson id "$detail_id" '.tasks[] | select(.id==$id) | .url' "$TASKS_FILE" 2>/dev/null)
+        url=$(_dec "$(jq -r --argjson id "$detail_id" '.tasks[] | select(.id==$id) | .url' "$TASKS_FILE" 2>/dev/null)")
         last_run=$(jq -r --argjson id "$detail_id" \
             '.tasks[] | select(.id==$id) | if .last_run==0 then "从未执行" else (.last_run | todate) end' \
             "$TASKS_FILE" 2>/dev/null)
@@ -192,11 +307,13 @@ task_add() {
     task_proxy=$(read_input "任务代理 (可选)")
 
     local id; id=$(jq '.next_id' "$TASKS_FILE")
+    local enc_url; enc_url=$(_enc "$url")
+    local enc_headers; enc_headers=$(_enc "$headers")
     local tmp; tmp=$(mktemp)
     jq --argjson id "$id" \
-       --arg name "$name" --arg url "$url" \
+       --arg name "$name" --arg url "$enc_url" \
        --argjson interval "$interval" --arg notes "$notes" \
-       --arg ua "$ua" --arg headers "$headers" --arg proxy "$task_proxy" \
+       --arg ua "$ua" --arg headers "$enc_headers" --arg proxy "$task_proxy" \
        '.tasks += [{
            "id": $id, "name": $name, "url": $url,
            "interval": $interval, "notes": $notes, "ua": $ua,
@@ -221,11 +338,11 @@ task_edit() {
 
     local cur_name cur_url cur_interval cur_notes cur_ua cur_headers
     cur_name=$(echo "$task" | jq -r '.name')
-    cur_url=$(echo "$task" | jq -r '.url')
+    cur_url=$(_dec "$(echo "$task" | jq -r '.url')")
     cur_interval=$(echo "$task" | jq -r '.interval')
     cur_notes=$(echo "$task" | jq -r '.notes')
     cur_ua=$(echo "$task" | jq -r '.ua // ""')
-    cur_headers=$(echo "$task" | jq -r '.headers // ""')
+    cur_headers=$(_dec "$(echo "$task" | jq -r '.headers // ""')")
 
     echo -e "  ${C}当前配置 (直接回车保留原值):${NC}"
     local new_name new_url new_interval new_notes new_ua new_headers
@@ -245,11 +362,13 @@ task_edit() {
         echo -e "  ${R}间隔必须为正整数${NC}"; press_enter; return
     fi
 
+    local enc_new_url; enc_new_url=$(_enc "$new_url")
+    local enc_new_headers; enc_new_headers=$(_enc "$new_headers")
     local tmp; tmp=$(mktemp)
     jq --argjson id "$id" \
-       --arg name "$new_name" --arg url "$new_url" \
+       --arg name "$new_name" --arg url "$enc_new_url" \
        --argjson interval "$new_interval" --arg notes "$new_notes" \
-       --arg ua "$new_ua" --arg headers "$new_headers" --arg proxy "$new_proxy" \
+       --arg ua "$new_ua" --arg headers "$enc_new_headers" --arg proxy "$new_proxy" \
        '(.tasks[] | select(.id==$id)) |= . + {
            "name":$name,"url":$url,"interval":$interval,"notes":$notes,
            "ua":$ua,"headers":$headers,"proxy":$proxy
@@ -404,8 +523,9 @@ repo_list() {
     while IFS=$'\t' read -r id name url branch task_ids filename push_interval; do
         local push_info="跟随任务"
         [[ "$push_interval" -gt 0 ]] 2>/dev/null && push_info="每 ${push_interval} 分钟"
+        local disp_url; disp_url=$(_dec "$url")
         echo -e "  ${C}[$id]${NC} ${W}$name${NC}"
-        echo -e "      仓库: ${C}$url${NC}"
+        echo -e "      仓库: ${C}$disp_url${NC}"
         echo -e "      分支: $branch  |  文件名: ${W}$filename${NC}"
         echo -e "      关联任务IDs: $task_ids  |  定时推送: $push_info"
         print_line
@@ -459,11 +579,13 @@ repo_add() {
     local push_interval=0
     [[ "$push_interval_str" =~ ^[0-9]+$ ]] && push_interval=$push_interval_str
 
+    local enc_github_url; enc_github_url=$(_enc "$github_url")
+    local enc_token; enc_token=$(_enc "$token")
     local id; id=$(jq '.next_id' "$REPOS_FILE")
     local tmp; tmp=$(mktemp)
     jq --argjson id "$id" \
-       --arg name "$name" --arg url "$github_url" \
-       --arg token "$token" --arg branch "$branch" \
+       --arg name "$name" --arg url "$enc_github_url" \
+       --arg token "$enc_token" --arg branch "$branch" \
        --arg filename "$filename" --argjson task_ids "$task_ids_json" \
        --argjson push_interval "$push_interval" \
        '.repos += [{
@@ -476,7 +598,7 @@ repo_add() {
     echo -e "\n  ${G}✓ 仓库 \"$name\" 添加成功 (ID: $id)${NC}"
     log "INFO" "Repo added: id=$id name=$name push_interval=${push_interval}m"
 
-    # 立即测试连通性
+    # 立即测试连通性（使用明文值，未离开内存）
     echo ""
     local repo_path; repo_path=$(echo "$github_url" | sed 's|https://github.com/||;s|\.git$||')
     local auth_url="https://x-access-token:${token}@github.com/${repo_path}.git"
@@ -502,7 +624,7 @@ repo_edit() {
     fi
 
     echo -e "  ${W}当前仓库列表:${NC}"
-    jq -r '.repos[] | "  [\(.id)] \(.name)  \(.github_url)  → \(.filename)"' "$REPOS_FILE"
+    jq -r '.repos[] | "  [\(.id)] \(.name)  → \(.filename)"' "$REPOS_FILE"
     echo ""
 
     local id; id=$(read_input "请输入要编辑的仓库 ID")
@@ -513,8 +635,8 @@ repo_edit() {
 
     local cur_name cur_url cur_token cur_branch cur_filename cur_task_ids
     cur_name=$(echo "$repo" | jq -r '.name')
-    cur_url=$(echo "$repo" | jq -r '.github_url')
-    cur_token=$(echo "$repo" | jq -r '.token')
+    cur_url=$(_dec "$(echo "$repo" | jq -r '.github_url')")
+    cur_token=$(_dec "$(echo "$repo" | jq -r '.token')")
     cur_branch=$(echo "$repo" | jq -r '.branch')
     cur_filename=$(echo "$repo" | jq -r '.filename')
     cur_task_ids=$(echo "$repo" | jq -r '.task_ids | map(tostring) | join(",")')
@@ -573,9 +695,11 @@ repo_edit() {
     new_task_ids_json=$(echo "$new_task_ids_str" | tr ',' '\n' | grep -E '^[0-9]+$' | \
         jq -R 'tonumber' | jq -s '.')
 
+    local enc_new_url; enc_new_url=$(_enc "$new_url")
+    local enc_new_token; enc_new_token=$(_enc "$new_token")
     local tmp; tmp=$(mktemp)
     jq --argjson id "$id" \
-       --arg name "$new_name" --arg url "$new_url" --arg token "$new_token" \
+       --arg name "$new_name" --arg url "$enc_new_url" --arg token "$enc_new_token" \
        --arg branch "$new_branch" --arg filename "$new_filename" \
        --argjson task_ids "$new_task_ids_json" \
        --argjson push_interval "$new_push_interval" \
@@ -632,8 +756,8 @@ repo_test_connection() {
 
     local repo_name github_url token
     repo_name=$(echo "$repo" | jq -r '.name')
-    github_url=$(echo "$repo" | jq -r '.github_url')
-    token=$(echo "$repo" | jq -r '.token')
+    github_url=$(_dec "$(echo "$repo" | jq -r '.github_url')")
+    token=$(_dec "$(echo "$repo" | jq -r '.token')")
 
     local repo_path; repo_path=$(echo "$github_url" | sed 's|https://github.com/||;s|\.git$||')
     local auth_url="https://x-access-token:${token}@github.com/${repo_path}.git"
@@ -748,11 +872,12 @@ notify_telegram() {
     print_header "Telegram 通知配置"
 
     local cur_token cur_chat_id cur_enabled
-    cur_token=$(jq -r '.providers.telegram.token' "$NOTIFY_FILE")
-    cur_chat_id=$(jq -r '.providers.telegram.chat_id' "$NOTIFY_FILE")
+    cur_token=$(_dec "$(jq -r '.providers.telegram.token' "$NOTIFY_FILE")")
+    cur_chat_id=$(_dec "$(jq -r '.providers.telegram.chat_id' "$NOTIFY_FILE")")
     cur_enabled=$(jq -r '.providers.telegram.enabled' "$NOTIFY_FILE")
 
     echo -e "  当前状态: $([ "$cur_enabled" == "true" ] && echo -e "${G}启用${NC}" || echo -e "${R}禁用${NC}")"
+    [[ -n "$cur_token" ]] && echo -e "  当前 Token: ${Y}$(_mask "$(jq -r '.providers.telegram.token' "$NOTIFY_FILE")")${NC}"
     echo -e "  获取方式: 与 @BotFather 对话创建Bot，再获取 chat_id"
     echo ""
 
@@ -762,8 +887,10 @@ notify_telegram() {
     read -rp "  启用 Telegram 通知? [y/N]: " enable_yn
     [[ "$(echo "$enable_yn" | tr '[:upper:]' '[:lower:]')" == "y" ]] && new_enabled="true" || new_enabled="false"
 
+    local enc_token; enc_token=$(_enc "$new_token")
+    local enc_chat_id; enc_chat_id=$(_enc "$new_chat_id")
     local tmp; tmp=$(mktemp)
-    jq --arg token "$new_token" --arg chat_id "$new_chat_id" \
+    jq --arg token "$enc_token" --arg chat_id "$enc_chat_id" \
        --argjson enabled "$new_enabled" \
        '.providers.telegram = {"enabled":$enabled,"token":$token,"chat_id":$chat_id}' \
        "$NOTIFY_FILE" > "$tmp" && mv "$tmp" "$NOTIFY_FILE"
@@ -777,8 +904,8 @@ notify_bark() {
     print_header "Bark 通知配置"
 
     local cur_key cur_server cur_enabled
-    cur_key=$(jq -r '.providers.bark.key' "$NOTIFY_FILE")
-    cur_server=$(jq -r '.providers.bark.server' "$NOTIFY_FILE")
+    cur_key=$(_dec "$(jq -r '.providers.bark.key' "$NOTIFY_FILE")")
+    cur_server=$(_dec "$(jq -r '.providers.bark.server' "$NOTIFY_FILE")")
     cur_enabled=$(jq -r '.providers.bark.enabled' "$NOTIFY_FILE")
 
     echo -e "  Bark 是 iOS 推送应用, App Store 搜索 Bark 下载"
@@ -790,8 +917,10 @@ notify_bark() {
     read -rp "  启用 Bark 通知? [y/N]: " enable_yn
     [[ "$(echo "$enable_yn" | tr '[:upper:]' '[:lower:]')" == "y" ]] && new_enabled="true" || new_enabled="false"
 
+    local enc_key; enc_key=$(_enc "$new_key")
+    local enc_server; enc_server=$(_enc "$new_server")
     local tmp; tmp=$(mktemp)
-    jq --arg key "$new_key" --arg server "$new_server" \
+    jq --arg key "$enc_key" --arg server "$enc_server" \
        --argjson enabled "$new_enabled" \
        '.providers.bark = {"enabled":$enabled,"key":$key,"server":$server}' \
        "$NOTIFY_FILE" > "$tmp" && mv "$tmp" "$NOTIFY_FILE"
@@ -805,7 +934,7 @@ notify_webhook() {
     print_header "Webhook 通知配置"
 
     local cur_url cur_method cur_enabled
-    cur_url=$(jq -r '.providers.webhook.url' "$NOTIFY_FILE")
+    cur_url=$(_dec "$(jq -r '.providers.webhook.url' "$NOTIFY_FILE")")
     cur_method=$(jq -r '.providers.webhook.method' "$NOTIFY_FILE")
     cur_enabled=$(jq -r '.providers.webhook.enabled' "$NOTIFY_FILE")
 
@@ -819,8 +948,9 @@ notify_webhook() {
     read -rp "  启用 Webhook 通知? [y/N]: " enable_yn
     [[ "$(echo "$enable_yn" | tr '[:upper:]' '[:lower:]')" == "y" ]] && new_enabled="true" || new_enabled="false"
 
+    local enc_url; enc_url=$(_enc "$new_url")
     local tmp; tmp=$(mktemp)
-    jq --arg url "$new_url" --arg method "$new_method" \
+    jq --arg url "$enc_url" --arg method "$new_method" \
        --argjson enabled "$new_enabled" \
        '.providers.webhook = {"enabled":$enabled,"url":$url,"method":$method}' \
        "$NOTIFY_FILE" > "$tmp" && mv "$tmp" "$NOTIFY_FILE"
@@ -970,8 +1100,8 @@ send_notification() {
     local tg_enabled; tg_enabled=$(jq -r '.providers.telegram.enabled' "$NOTIFY_FILE")
     if [[ "$tg_enabled" == "true" ]]; then
         local tg_token tg_chat
-        tg_token=$(jq -r '.providers.telegram.token' "$NOTIFY_FILE")
-        tg_chat=$(jq -r '.providers.telegram.chat_id' "$NOTIFY_FILE")
+        tg_token=$(_dec "$(jq -r '.providers.telegram.token' "$NOTIFY_FILE")")
+        tg_chat=$(_dec "$(jq -r '.providers.telegram.chat_id' "$NOTIFY_FILE")")
         local msg="*${title}*%0A${body}"
         if curl -s --connect-timeout 10 -X POST \
             "https://api.telegram.org/bot${tg_token}/sendMessage" \
@@ -988,8 +1118,8 @@ send_notification() {
     local bark_enabled; bark_enabled=$(jq -r '.providers.bark.enabled' "$NOTIFY_FILE")
     if [[ "$bark_enabled" == "true" ]]; then
         local bark_key bark_server
-        bark_key=$(jq -r '.providers.bark.key' "$NOTIFY_FILE")
-        bark_server=$(jq -r '.providers.bark.server' "$NOTIFY_FILE")
+        bark_key=$(_dec "$(jq -r '.providers.bark.key' "$NOTIFY_FILE")")
+        bark_server=$(_dec "$(jq -r '.providers.bark.server' "$NOTIFY_FILE")")
         local enc_title enc_body
         enc_title=$(python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))" \
             "$title" 2>/dev/null || echo "$title")
@@ -1009,7 +1139,7 @@ send_notification() {
     local wh_enabled; wh_enabled=$(jq -r '.providers.webhook.enabled' "$NOTIFY_FILE")
     if [[ "$wh_enabled" == "true" ]]; then
         local wh_url wh_method
-        wh_url=$(jq -r '.providers.webhook.url' "$NOTIFY_FILE")
+        wh_url=$(_dec "$(jq -r '.providers.webhook.url' "$NOTIFY_FILE")")
         wh_method=$(jq -r '.providers.webhook.method' "$NOTIFY_FILE")
         local payload
         payload=$(jq -n --arg t "$title" --arg b "$body" \
@@ -1088,9 +1218,9 @@ fetch_task() {
 
     local name url custom_ua custom_headers task_proxy
     name=$(echo "$task" | jq -r '.name')
-    url=$(echo "$task" | jq -r '.url')
+    url=$(_dec "$(echo "$task" | jq -r '.url')")
     custom_ua=$(echo "$task" | jq -r '.ua // ""')
-    custom_headers=$(echo "$task" | jq -r '.headers // ""')
+    custom_headers=$(_dec "$(echo "$task" | jq -r '.headers // ""')")
     task_proxy=$(echo "$task" | jq -r '.proxy // ""')
     local output_file="${DATA_DIR}/task_${task_id}.txt"
 
@@ -1215,8 +1345,8 @@ push_to_github() {
 
     local repo_name github_url token branch filename
     repo_name=$(echo "$repo" | jq -r '.name')
-    github_url=$(echo "$repo" | jq -r '.github_url')
-    token=$(echo "$repo" | jq -r '.token')
+    github_url=$(_dec "$(echo "$repo" | jq -r '.github_url')")
+    token=$(_dec "$(echo "$repo" | jq -r '.token')")
     branch=$(echo "$repo" | jq -r '.branch')
     filename=$(echo "$repo" | jq -r '.filename')
 
@@ -1748,8 +1878,8 @@ readonly BOT_PID_FILE="${INSTALL_DIR}/bot.pid"
 BOT_TOKEN=""; BOT_CHAT_ID=""; BOT_CLIENT_NAME=""
 
 _bot_load_config() {
-    BOT_TOKEN=$(jq -r '.providers.telegram.token // ""' "$NOTIFY_FILE" 2>/dev/null)
-    BOT_CHAT_ID=$(jq -r '.providers.telegram.chat_id // ""' "$NOTIFY_FILE" 2>/dev/null)
+    BOT_TOKEN=$(_dec "$(jq -r '.providers.telegram.token // ""' "$NOTIFY_FILE" 2>/dev/null)")
+    BOT_CHAT_ID=$(_dec "$(jq -r '.providers.telegram.chat_id // ""' "$NOTIFY_FILE" 2>/dev/null)")
     BOT_CLIENT_NAME=$(jq -r '.providers.telegram.bot_client_name // ""' "$NOTIFY_FILE" 2>/dev/null)
 }
 
@@ -1890,8 +2020,9 @@ _bot_cmd_repos() {
     local count; count=$(jq '.repos | length' "$REPOS_FILE" 2>/dev/null)
     [[ "$count" -eq 0 ]] && { _bot_send "$1" "暂无仓库配置"; return; }
     local msg="🗂 仓库列表"$'\n'
-    while IFS=$'\t' read -r id name url filename; do
-        msg+="[${id}] ${name} → ${filename}"$'\n'"    ${url}"$'\n'
+    while IFS=$'\t' read -r id name enc_url filename; do
+        local disp_url; disp_url=$(_dec "$enc_url")
+        msg+="[${id}] ${name} → ${filename}"$'\n'"    ${disp_url}"$'\n'
     done < <(jq -r '.repos[] | [(.id|tostring),.name,.github_url,.filename] | @tsv' "$REPOS_FILE")
     _bot_send "$1" "$msg"
 }
@@ -1993,10 +2124,11 @@ URL: ${u}
             if [[ "$(echo "$text" | tr '[:upper:]' '[:lower:]')" == "y" ]]; then
                 local name; name=$(_bot_get_data "name")
                 local url; url=$(_bot_get_data "url")
+                local enc_url; enc_url=$(_enc "$url")
                 local interval; interval=$(_bot_get_data "interval")
                 local id; id=$(jq '.next_id' "$TASKS_FILE")
                 local tmp; tmp=$(mktemp)
-                jq --argjson id "$id" --arg name "$name" --arg url "$url" \
+                jq --argjson id "$id" --arg name "$name" --arg url "$enc_url" \
                    --argjson interval "$interval" \
                    '.tasks += [{"id":$id,"name":$name,"url":$url,"enabled":true,
                      "interval":$interval,"last_run":0,"ua":"","headers":"","proxy":""}]
@@ -2067,12 +2199,14 @@ ${tlist}" ;;
                 name=$(_bot_get_data "name"); url=$(_bot_get_data "url")
                 token=$(_bot_get_data "token"); branch=$(_bot_get_data "branch")
                 fp=$(_bot_get_data "filepath"); tasks_str=$(_bot_get_data "tasks")
+                local enc_url; enc_url=$(_enc "$url")
+                local enc_token; enc_token=$(_enc "$token")
                 local task_ids_json
                 task_ids_json=$(echo "$tasks_str" | tr ',' '\n' | grep -E '^[0-9]+$' | jq -R 'tonumber' | jq -s '.')
                 local id; id=$(jq '.next_id' "$REPOS_FILE")
                 local tmp; tmp=$(mktemp)
-                jq --argjson id "$id" --arg name "$name" --arg url "$url" \
-                   --arg token "$token" --arg branch "$branch" --arg filename "$fp" \
+                jq --argjson id "$id" --arg name "$name" --arg url "$enc_url" \
+                   --arg token "$enc_token" --arg branch "$branch" --arg filename "$fp" \
                    --argjson task_ids "$task_ids_json" \
                    '.repos += [{"id":$id,"name":$name,"github_url":$url,
                      "token":$token,"branch":$branch,"filename":$filename,

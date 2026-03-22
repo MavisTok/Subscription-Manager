@@ -5,7 +5,7 @@
 #  平台: Linux / macOS / Windows (Git Bash / WSL) / OpenWrt
 # ============================================================
 
-readonly VERSION="1.3.9"  # auto-managed by .githooks/pre-commit
+readonly VERSION="1.3.10"  # auto-managed by .githooks/pre-commit
 readonly GITHUB_RAW="https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main"
 readonly GITHUB_RAW_PROXY="https://ghfast.top/${GITHUB_RAW}"
 
@@ -1745,17 +1745,29 @@ update_rollback() {
 
 readonly BOT_STATE_FILE="${CONFIG_DIR}/bot_state.json"
 readonly BOT_PID_FILE="${INSTALL_DIR}/bot.pid"
-BOT_TOKEN=""; BOT_CHAT_ID=""
+BOT_TOKEN=""; BOT_CHAT_ID=""; BOT_CLIENT_NAME=""
 
 _bot_load_config() {
     BOT_TOKEN=$(jq -r '.providers.telegram.token // ""' "$NOTIFY_FILE" 2>/dev/null)
     BOT_CHAT_ID=$(jq -r '.providers.telegram.chat_id // ""' "$NOTIFY_FILE" 2>/dev/null)
+    BOT_CLIENT_NAME=$(jq -r '.providers.telegram.bot_client_name // ""' "$NOTIFY_FILE" 2>/dev/null)
+}
+
+# 保存客户端名称到 notify.json
+_bot_save_client_name() {
+    local name="$1"
+    local tmp; tmp=$(mktemp)
+    jq --arg n "$name" '.providers.telegram.bot_client_name = $n' "$NOTIFY_FILE" > "$tmp" \
+        && mv "$tmp" "$NOTIFY_FILE"
+    BOT_CLIENT_NAME="$name"
 }
 
 # 发送消息（--data-urlencode 自动处理特殊字符）
+# 多客户端模式下自动在消息前加 [客户端名] 标识
 _bot_send() {
     local chat_id="$1" text="$2" parse_mode="${3:-}"
     [[ -z "$BOT_TOKEN" ]] && return 1
+    [[ -n "$BOT_CLIENT_NAME" ]] && text="[${BOT_CLIENT_NAME}] ${text}"
     local args=(-s --connect-timeout 10 --max-time 20
                 -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage"
                 -d "chat_id=${chat_id}"
@@ -1763,6 +1775,30 @@ _bot_send() {
                 -d "disable_web_page_preview=true")
     [[ -n "$parse_mode" ]] && args+=(-d "parse_mode=${parse_mode}")
     curl "${args[@]}" > /dev/null 2>&1
+}
+
+# ── 客户端路由辅助 ────────────────────────────────────────
+
+# 从 args 字符串开头提取 @clientname，返回名称（不含 @）
+_bot_extract_target() {
+    echo "$1" | grep -oE '^@[A-Za-z0-9_.-]+' | tr -d '@'
+}
+
+# 去掉 args 开头的 @clientname（及后面的空格）
+_bot_strip_target() {
+    echo "$1" | sed 's/^@[A-Za-z0-9_.-][A-Za-z0-9_.-]* *//'
+}
+
+# 判断本客户端是否应处理该命令
+# target="" → 广播，所有客户端处理
+# target="x" 且本客户端无名称 → 忽略定向命令
+# target="x" 且本客户端名称匹配 → 处理
+_bot_is_targeted() {
+    local target="$1"
+    [[ -z "$target" ]] && return 0
+    [[ -z "$BOT_CLIENT_NAME" ]] && return 1
+    [[ "$target" == "$BOT_CLIENT_NAME" ]] && return 0
+    return 1
 }
 
 # ── 状态机 ────────────────────────────────────────────────
@@ -1782,7 +1818,25 @@ _bot_update_data() {
 }
 
 # ── 单步命令 ──────────────────────────────────────────────
+_bot_cmd_clients() {
+    local chat_id="$1"
+    local task_cnt; task_cnt=$(jq '.tasks | length' "$TASKS_FILE" 2>/dev/null || echo 0)
+    local enabled_cnt; enabled_cnt=$(jq '[.tasks[] | select(.enabled)] | length' "$TASKS_FILE" 2>/dev/null || echo 0)
+    local repo_cnt; repo_cnt=$(jq '.repos | length' "$REPOS_FILE" 2>/dev/null || echo 0)
+    local name_info; name_info="${BOT_CLIENT_NAME:-（未命名）}"
+    _bot_send "$chat_id" "🟢 在线
+名称: ${name_info}
+任务: ${task_cnt} (启用 ${enabled_cnt})  |  仓库: ${repo_cnt}
+版本: v${VERSION}  平台: ${OS_TYPE}"
+}
+
 _bot_cmd_help() {
+    local target_hint=""
+    [[ -n "$BOT_CLIENT_NAME" ]] && \
+        target_hint="
+多客户端定向 (可选):
+/cmd @${BOT_CLIENT_NAME} [参数]  - 仅本客户端执行
+/cmd                             - 所有客户端响应"
     _bot_send "$1" "📋 订阅管理 Bot v${VERSION}
 
 任务管理:
@@ -1790,17 +1844,18 @@ _bot_cmd_help() {
 /run            - 执行全部启用任务
 /run <ID>       - 执行指定任务
 /toggle <ID>    - 启用/禁用任务
-/addtask        - 添加拉取任务
+/addtask @名称  - 添加拉取任务
 
 仓库管理:
 /repos          - 查看所有仓库
 /push <ID>      - 推送到指定仓库
-/addrepo        - 添加 GitHub 仓库
+/addrepo @名称  - 添加 GitHub 仓库
 
 系统:
 /status         - 状态概览
+/clients        - 查看所有在线客户端
 /logs           - 最近20条日志
-/cancel         - 取消当前操作"
+/cancel         - 取消当前操作${target_hint}"
 }
 
 _bot_cmd_status() {
@@ -2058,9 +2113,28 @@ _bot_handle_message() {
     [[ "$args" == "$cmd" ]] && args=""
     args=$(echo "$args" | sed 's/^[[:space:]]*//')
 
+    # 提取可选 @target，判断本客户端是否应处理
+    local target; target=$(_bot_extract_target "$args")
+    if [[ -n "$target" ]]; then
+        args=$(_bot_strip_target "$args")
+    fi
+    _bot_is_targeted "$target" || return
+
+    # addtask / addrepo 在多客户端模式下必须指定 @target，避免并行状态冲突
+    if [[ -n "$BOT_CLIENT_NAME" && -z "$target" ]]; then
+        case "$cmd" in
+            /addtask|/addrepo)
+                _bot_send "$chat_id" "⚠️ 多客户端模式下请指定目标客户端:
+${cmd} @${BOT_CLIENT_NAME}
+发 /clients 查看所有在线客户端"
+                return ;;
+        esac
+    fi
+
     case "$cmd" in
         /start|/help) _bot_cmd_help    "$chat_id" ;;
         /status)      _bot_cmd_status  "$chat_id" ;;
+        /clients)     _bot_cmd_clients "$chat_id" ;;
         /tasks)       _bot_cmd_tasks   "$chat_id" ;;
         /repos)       _bot_cmd_repos   "$chat_id" ;;
         /run)         _bot_cmd_run     "$chat_id" "$args" ;;
@@ -2084,9 +2158,11 @@ bot_run() {
     fi
     _bot_init_state
     echo $$ > "$BOT_PID_FILE"
-    log "INFO" "Bot started: pid=$$"
-    echo "Bot 已启动 (PID=$$)，Ctrl+C 停止"
-    _bot_send "$BOT_CHAT_ID" "🟢 Bot 已启动 v${VERSION}，发 /help 查看命令"
+    log "INFO" "Bot started: pid=$$ client=${BOT_CLIENT_NAME:-unnamed}"
+    echo "Bot 已启动 (PID=$$, 客户端: ${BOT_CLIENT_NAME:-未命名})，Ctrl+C 停止"
+    local start_msg="🟢 Bot 已启动 v${VERSION}，发 /help 查看命令"
+    [[ -n "$BOT_CLIENT_NAME" ]] && start_msg="🟢 [${BOT_CLIENT_NAME}] Bot 已启动 v${VERSION}，发 /help 查看命令"
+    _bot_send "$BOT_CHAT_ID" "$start_msg"
 
     local offset=0
     while true; do
@@ -2138,14 +2214,16 @@ bot_menu() {
         print_header "Telegram Bot 管理"
         _bot_load_config
         local tok_info="未配置"; [[ -n "$BOT_TOKEN" && "$BOT_TOKEN" != "null" ]] && tok_info="${BOT_TOKEN:0:10}***"
-        echo -e "  Token:   ${C}${tok_info}${NC}"
-        echo -e "  Chat ID: ${C}${BOT_CHAT_ID:-未配置}${NC}"
-        echo -ne "  状态:    "; bot_status_label
+        echo -e "  Token:      ${C}${tok_info}${NC}"
+        echo -e "  Chat ID:    ${C}${BOT_CHAT_ID:-未配置}${NC}"
+        echo -e "  客户端名称: ${C}${BOT_CLIENT_NAME:-（未设置，单机模式）}${NC}"
+        echo -ne "  状态:       "; bot_status_label
         echo ""
         echo -e "  ${C}1.${NC} 启动 Bot (前台)"
         echo -e "  ${C}2.${NC} 启动 Bot (后台守护)"
         echo -e "  ${C}3.${NC} 停止 Bot"
         echo -e "  ${C}4.${NC} 查看 Bot 日志"
+        echo -e "  ${C}5.${NC} 设置客户端名称"
         echo -e "  ${C}0.${NC} 返回主菜单"
         echo ""
         local choice; choice=$(read_input "请选择")
@@ -2178,6 +2256,20 @@ bot_menu() {
             4)
                 clear_screen; print_header "Bot 日志"
                 tail -50 "${LOG_DIR}/bot.log" 2>/dev/null || echo -e "  ${Y}日志为空${NC}"
+                press_enter ;;
+            5)
+                echo ""
+                echo -e "  ${Y}客户端名称用于多机部署时区分不同客户端${NC}"
+                echo -e "  ${Y}仅使用字母、数字、下划线、连字符，如: router1 vps-hk${NC}"
+                [[ -n "$BOT_CLIENT_NAME" ]] && echo -e "  当前名称: ${C}${BOT_CLIENT_NAME}${NC}"
+                local new_name; new_name=$(read_input "请输入客户端名称 (留空清除)")
+                new_name=$(echo "$new_name" | tr -d ' ')
+                _bot_save_client_name "$new_name"
+                if [[ -n "$new_name" ]]; then
+                    echo -e "  ${G}✓ 客户端名称已设为: ${new_name}${NC}"
+                else
+                    echo -e "  ${G}✓ 客户端名称已清除（单机模式）${NC}"
+                fi
                 press_enter ;;
             0) return ;;
         esac

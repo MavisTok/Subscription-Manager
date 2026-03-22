@@ -5,7 +5,7 @@
 #  平台: Linux / macOS / Windows (Git Bash / WSL)
 # ============================================================
 
-readonly VERSION="1.3.0"
+readonly VERSION="1.3.1"
 readonly GITHUB_RAW="https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main"
 readonly GITHUB_RAW_PROXY="https://ghfast.top/${GITHUB_RAW}"
 
@@ -602,6 +602,55 @@ repo_test_connection() {
     press_enter
 }
 
+repo_push_now() {
+    clear_screen
+    print_header "立即推送到仓库"
+
+    local count; count=$(jq '.repos | length' "$REPOS_FILE")
+    if [[ "$count" -eq 0 ]]; then
+        echo -e "  ${Y}暂无仓库配置${NC}"; press_enter; return
+    fi
+
+    jq -r '.repos[] | "  [\(.id)] \(.name)  (关联任务: \(.task_ids | map(tostring) | join(",")))"' "$REPOS_FILE"
+    echo ""
+    local id; id=$(read_input "请输入要推送的仓库 ID")
+    local repo; repo=$(jq --argjson id "$id" '.repos[] | select(.id==$id)' "$REPOS_FILE" 2>/dev/null)
+    if [[ -z "$repo" ]]; then
+        echo -e "  ${R}未找到 ID=$id 的仓库${NC}"; press_enter; return
+    fi
+
+    local repo_name task_ids
+    repo_name=$(echo "$repo" | jq -r '.name')
+    task_ids=$(echo "$repo" | jq -r '.task_ids[]' 2>/dev/null)
+
+    if [[ -z "$task_ids" ]]; then
+        echo -e "  ${Y}该仓库未关联任何任务，无文件可推送${NC}"
+        press_enter; return
+    fi
+
+    echo ""
+    local any_ok=false
+    while IFS= read -r tid; do
+        [[ -z "$tid" ]] && continue
+        local tname; tname=$(jq -r --argjson id "$tid" '.tasks[] | select(.id==$id) | .name' "$TASKS_FILE")
+        local data_file="${DATA_DIR}/task_${tid}.txt"
+        if [[ ! -f "$data_file" ]]; then
+            echo -e "  ${Y}任务 [$tid] $tname: 尚无本地数据，请先执行拉取${NC}"
+            continue
+        fi
+        echo -e "  ${C}推送任务 [$tid] $tname → \"$repo_name\"...${NC}"
+        if push_to_github "$id" "$tid" "true"; then
+            any_ok=true
+        fi
+    done <<< "$task_ids"
+
+    echo ""
+    [[ "$any_ok" == "true" ]] && \
+        echo -e "  ${G}✓ 推送完成${NC}" || \
+        echo -e "  ${R}推送失败，请检查 Token 和仓库配置${NC}"
+    press_enter
+}
+
 repo_menu() {
     while true; do
         clear_screen
@@ -613,6 +662,7 @@ repo_menu() {
         echo -e "  ${C}3.${NC} 编辑仓库"
         echo -e "  ${C}4.${NC} 删除仓库"
         echo -e "  ${C}5.${NC} 测试推送连通性"
+        echo -e "  ${C}6.${NC} 立即推送到仓库"
         echo -e "  ${C}0.${NC} 返回主菜单"
         echo ""
         local choice; choice=$(read_input "请选择")
@@ -620,6 +670,7 @@ repo_menu() {
             1) repo_list ;; 2) repo_add ;;
             3) repo_edit ;; 4) repo_delete ;;
             5) repo_test_connection ;;
+            6) repo_push_now ;;
             0) return ;;
             *) echo -e "  ${R}无效选项${NC}"; sleep 1 ;;
         esac

@@ -5,7 +5,7 @@
 #  平台: Linux / macOS / Windows (Git Bash / WSL)
 # ============================================================
 
-readonly VERSION="1.3.6"  # auto-managed by .githooks/pre-commit
+readonly VERSION="1.3.7"  # auto-managed by .githooks/pre-commit
 readonly GITHUB_RAW="https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main"
 readonly GITHUB_RAW_PROXY="https://ghfast.top/${GITHUB_RAW}"
 
@@ -432,8 +432,17 @@ repo_add() {
     echo ""
     token=$(read_input "GitHub Access Token")
     branch=$(read_input "推送分支" "main")
-    echo -e "  ${Y}格式: 文件名 或 目录/文件名 (如: public/clash.yaml)${NC}"
-    filename=$(read_input "推送文件路径" "subscription.txt")
+    echo -e "  ${W}推送位置配置:${NC}"
+    local add_dir add_file
+    add_dir=$(read_input  "子目录 (留空=根目录, 如: public / configs)")
+    add_file=$(read_input "文件名 (如: clash.yaml / subscription.txt)" "subscription.txt")
+    [[ -z "$add_file" ]] && add_file="subscription.txt"
+    if [[ -n "$add_dir" ]]; then
+        filename="${add_dir}/${add_file}"
+    else
+        filename="$add_file"
+    fi
+    echo -e "  ${G}→ 将上传到仓库路径: ${C}${filename}${NC}"
 
     echo ""
     echo -e "  ${C}可用任务:${NC}"
@@ -521,9 +530,27 @@ repo_edit() {
     new_token=$(read_input "Access Token" "$cur_token")
     new_branch=$(read_input "分支" "$cur_branch")
     echo ""
-    echo -e "  ${Y}当前推送路径: ${C}${cur_filename}${NC}"
-    echo -e "  ${Y}格式: 文件名 或 目录/文件名 (如: public/clash.yaml)${NC}"
-    new_filename=$(read_input "推送文件路径" "$cur_filename")
+    # 拆分当前路径为目录 + 文件名
+    local cur_dir cur_file
+    if [[ "$cur_filename" == */* ]]; then
+        cur_dir="${cur_filename%/*}"
+        cur_file="${cur_filename##*/}"
+    else
+        cur_dir=""
+        cur_file="$cur_filename"
+    fi
+    echo -e "  ${W}推送位置配置:${NC}"
+    echo -e "  当前完整路径: ${C}${cur_filename}${NC}"
+    local new_dir new_file
+    new_dir=$(read_input  "子目录 (留空=根目录, 如: public / configs)" "$cur_dir")
+    new_file=$(read_input "文件名 (如: clash.yaml / subscription.txt)" "$cur_file")
+    [[ -z "$new_file" ]] && new_file="subscription.txt"
+    if [[ -n "$new_dir" ]]; then
+        new_filename="${new_dir}/${new_file}"
+    else
+        new_filename="$new_file"
+    fi
+    echo -e "  ${G}→ 将上传到仓库路径: ${C}${new_filename}${NC}"
 
     echo ""
     echo -e "  ${W}可用任务:${NC}"

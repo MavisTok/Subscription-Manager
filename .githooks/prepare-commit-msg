@@ -1,0 +1,19 @@
+#!/bin/bash
+# 将当前 sub-manager.sh 版本号追加到 commit 消息末尾
+# 仅当 sub-manager.sh 在暂存区时生效
+
+SCRIPT="sub-manager.sh"
+COMMIT_MSG_FILE="$1"
+
+git diff --cached --name-only | grep -qE "^${SCRIPT}$" || exit 0
+
+# 读取版本（pre-commit 已 bump，这里读的是 bump 后的值）
+ver=$(grep -m1 "^readonly VERSION=" "$SCRIPT" 2>/dev/null | cut -d'"' -f2)
+[[ -z "$ver" ]] && exit 0
+
+# 如果消息里已有版本标记则跳过
+grep -q "^\[v" "$COMMIT_MSG_FILE" 2>/dev/null && exit 0
+
+# 追加到第一行末尾
+sed -i.bak "1s/$/ [v${ver}]/" "$COMMIT_MSG_FILE"
+rm -f "${COMMIT_MSG_FILE}.bak"

@@ -639,18 +639,27 @@ if [[ "$(echo "$override_su" | tr '[:upper:]' '[:lower:]')" == "y" ]]; then
     REAL_SU=$(command -v su 2>/dev/null || echo "/bin/su")
     [[ "$REAL_SU" == "/usr/local/bin/su" ]] && REAL_SU="/bin/su"
 
-    cat > /usr/local/bin/su << SUWRAPEOF
-#!/bin/bash
+    SU_WRAPPER_CONTENT="#!/bin/bash
 # Sub Manager 'su' 包装器
 # 无参数时打开管理工具，有参数时使用系统 su
 if [[ \$# -eq 0 && -t 0 ]]; then
     exec ${INSTALL_DIR}/${SCRIPT_NAME}
 else
-    exec ${REAL_SU} "\$@"
-fi
-SUWRAPEOF
-    chmod +x /usr/local/bin/su
-    echo -e "  ${G}✓ 'su' 已配置 (无参数 → 管理工具, 有参数 → 系统su)${NC}"
+    exec ${REAL_SU} \"\$@\"
+fi"
+
+    _write_su_wrapper() {
+        echo "$SU_WRAPPER_CONTENT" > /usr/local/bin/su && chmod +x /usr/local/bin/su
+    }
+
+    if _write_su_wrapper 2>/dev/null; then
+        echo -e "  ${G}✓ 'su' 已配置 (无参数 → 管理工具, 有参数 → 系统su)${NC}"
+    elif sudo sh -c "echo \"\$SU_WRAPPER_CONTENT\" > /usr/local/bin/su && chmod +x /usr/local/bin/su" 2>/dev/null; then
+        echo -e "  ${G}✓ 'su' 已配置 (通过 sudo)${NC}"
+    else
+        echo -e "  ${Y}⚠ 无权写入 /usr/local/bin/su，跳过 su 重定向${NC}"
+        echo -e "  ${Y}  如需配置，请用 sudo bash install.sh${NC}"
+    fi
 else
     echo -e "  ${Y}跳过，使用 'subm' 命令启动工具${NC}"
 fi

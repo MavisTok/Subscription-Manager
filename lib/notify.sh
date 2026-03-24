@@ -5,16 +5,21 @@
 # ══════════════════════════════════════════════════════════
 
 notify_show_status() {
-    local tg bark wh
+    local tg bark wh pp sc
     tg=$(jq -r '.providers.telegram.enabled' "$NOTIFY_FILE")
     bark=$(jq -r '.providers.bark.enabled' "$NOTIFY_FILE")
     wh=$(jq -r '.providers.webhook.enabled' "$NOTIFY_FILE")
+    pp=$(jq -r '.providers.pushplus.enabled // false' "$NOTIFY_FILE")
+    sc=$(jq -r '.providers.serverchan.enabled // false' "$NOTIFY_FILE")
 
     local ts="${R}禁用${NC}"; [[ "$tg"   == "true" ]] && ts="${G}启用${NC}"
     local bs="${R}禁用${NC}"; [[ "$bark" == "true" ]] && bs="${G}启用${NC}"
     local ws="${R}禁用${NC}"; [[ "$wh"   == "true" ]] && ws="${G}启用${NC}"
+    local ps="${R}禁用${NC}"; [[ "$pp"   == "true" ]] && ps="${G}启用${NC}"
+    local ss="${R}禁用${NC}"; [[ "$sc"   == "true" ]] && ss="${G}启用${NC}"
 
     echo -e "  Telegram: $ts  |  Bark: $bs  |  Webhook: $ws"
+    echo -e "  PushPlus: $ps  |  Server酱: $ss"
 }
 
 notify_telegram() {
@@ -109,6 +114,62 @@ notify_webhook() {
     press_enter
 }
 
+notify_pushplus() {
+    clear_screen
+    print_header "PushPlus 通知配置"
+
+    local cur_token cur_enabled
+    cur_token=$(_dec "$(jq -r '.providers.pushplus.token // ""' "$NOTIFY_FILE")")
+    cur_enabled=$(jq -r '.providers.pushplus.enabled // false' "$NOTIFY_FILE")
+
+    echo -e "  当前状态: $([ "$cur_enabled" == "true" ] && echo -e "${G}启用${NC}" || echo -e "${R}禁用${NC}")"
+    [[ -n "$cur_token" ]] && echo -e "  当前 Token: ${Y}$(_mask "$(jq -r '.providers.pushplus.token // ""' "$NOTIFY_FILE")")${NC}"
+    echo -e "  获取方式: 登录 ${C}https://www.pushplus.plus${NC} 后在个人中心获取 Token"
+    echo ""
+
+    local new_token enable_yn new_enabled
+    new_token=$(read_input "PushPlus Token" "$cur_token")
+    read -rp "  启用 PushPlus 通知? [y/N]: " enable_yn
+    [[ "$(echo "$enable_yn" | tr '[:upper:]' '[:lower:]')" == "y" ]] && new_enabled="true" || new_enabled="false"
+
+    local enc_token; enc_token=$(_enc "$new_token")
+    local tmp; tmp=$(mktemp)
+    jq --arg token "$enc_token" --argjson enabled "$new_enabled" \
+       '.providers.pushplus = {"enabled":$enabled,"token":$token}' \
+       "$NOTIFY_FILE" > "$tmp" && mv "$tmp" "$NOTIFY_FILE"
+
+    echo -e "\n  ${G}✓ PushPlus 配置已保存${NC}"
+    press_enter
+}
+
+notify_serverchan() {
+    clear_screen
+    print_header "Server酱 通知配置"
+
+    local cur_sendkey cur_enabled
+    cur_sendkey=$(_dec "$(jq -r '.providers.serverchan.sendkey // ""' "$NOTIFY_FILE")")
+    cur_enabled=$(jq -r '.providers.serverchan.enabled // false' "$NOTIFY_FILE")
+
+    echo -e "  当前状态: $([ "$cur_enabled" == "true" ] && echo -e "${G}启用${NC}" || echo -e "${R}禁用${NC}")"
+    [[ -n "$cur_sendkey" ]] && echo -e "  当前 SendKey: ${Y}$(_mask "$(jq -r '.providers.serverchan.sendkey // ""' "$NOTIFY_FILE")")${NC}"
+    echo -e "  获取方式: 登录 ${C}https://sct.ftqq.com${NC} 获取 SendKey"
+    echo ""
+
+    local new_sendkey enable_yn new_enabled
+    new_sendkey=$(read_input "SendKey" "$cur_sendkey")
+    read -rp "  启用 Server酱 通知? [y/N]: " enable_yn
+    [[ "$(echo "$enable_yn" | tr '[:upper:]' '[:lower:]')" == "y" ]] && new_enabled="true" || new_enabled="false"
+
+    local enc_sendkey; enc_sendkey=$(_enc "$new_sendkey")
+    local tmp; tmp=$(mktemp)
+    jq --arg sendkey "$enc_sendkey" --argjson enabled "$new_enabled" \
+       '.providers.serverchan = {"enabled":$enabled,"sendkey":$sendkey}' \
+       "$NOTIFY_FILE" > "$tmp" && mv "$tmp" "$NOTIFY_FILE"
+
+    echo -e "\n  ${G}✓ Server酱 配置已保存${NC}"
+    press_enter
+}
+
 notify_test() {
     clear_screen
     print_header "测试消息推送"
@@ -126,13 +187,16 @@ notify_menu() {
         echo -e "  ${C}1.${NC} 配置 Telegram"
         echo -e "  ${C}2.${NC} 配置 Bark (iOS)"
         echo -e "  ${C}3.${NC} 配置 Webhook"
-        echo -e "  ${C}4.${NC} 发送测试消息"
+        echo -e "  ${C}4.${NC} 配置 PushPlus (微信)"
+        echo -e "  ${C}5.${NC} 配置 Server酱"
+        echo -e "  ${C}6.${NC} 发送测试消息"
         echo -e "  ${C}0.${NC} 返回主菜单"
         echo ""
         local choice; choice=$(read_input "请选择")
         case "$choice" in
-            1) notify_telegram ;; 2) notify_bark ;;
-            3) notify_webhook ;; 4) notify_test ;;
+            1) notify_telegram ;;  2) notify_bark ;;
+            3) notify_webhook ;;   4) notify_pushplus ;;
+            5) notify_serverchan ;; 6) notify_test ;;
             0) return ;;
             *) echo -e "  ${R}无效选项${NC}"; sleep 1 ;;
         esac
@@ -203,6 +267,50 @@ send_notification() {
             sent=true
         else
             [[ "$verbose" == "true" ]] && echo -e "  ${R}✗ Webhook 通知失败${NC}"
+        fi
+    fi
+
+    # PushPlus
+    local pp_enabled; pp_enabled=$(jq -r '.providers.pushplus.enabled // false' "$NOTIFY_FILE")
+    if [[ "$pp_enabled" == "true" ]]; then
+        local pp_token
+        pp_token=$(_dec "$(jq -r '.providers.pushplus.token // ""' "$NOTIFY_FILE")")
+        local pp_payload
+        pp_payload=$(jq -n --arg token "$pp_token" --arg title "$title" \
+            --arg content "$body" --arg template "txt" \
+            '{token:$token,title:$title,content:$content,template:$template}')
+        if curl -s --connect-timeout 10 -X POST \
+            "https://www.pushplus.plus/send" \
+            -H "Content-Type: application/json" -d "$pp_payload" \
+            > /dev/null 2>&1; then
+            [[ "$verbose" == "true" ]] && echo -e "  ${G}✓ PushPlus 通知已发送${NC}"
+            sent=true
+        else
+            [[ "$verbose" == "true" ]] && echo -e "  ${R}✗ PushPlus 通知失败${NC}"
+        fi
+    fi
+
+    # Server酱
+    local sc_enabled; sc_enabled=$(jq -r '.providers.serverchan.enabled // false' "$NOTIFY_FILE")
+    if [[ "$sc_enabled" == "true" ]]; then
+        local sc_key sc_url
+        sc_key=$(_dec "$(jq -r '.providers.serverchan.sendkey // ""' "$NOTIFY_FILE")")
+        # SC3 密钥格式 sctp\d+t 使用新域名，其余用旧域名
+        if echo "$sc_key" | grep -qE '^sctp[0-9]+t'; then
+            sc_url="https://${sc_key}.push.ft07.com/send"
+        else
+            sc_url="https://sctapi.ftqq.com/${sc_key}.send"
+        fi
+        local sc_payload
+        sc_payload=$(jq -n --arg title "$title" --arg desp "$body" \
+            '{title:$title,desp:$desp}')
+        if curl -s --connect-timeout 10 -X POST "$sc_url" \
+            -H "Content-Type: application/json" -d "$sc_payload" \
+            > /dev/null 2>&1; then
+            [[ "$verbose" == "true" ]] && echo -e "  ${G}✓ Server酱 通知已发送${NC}"
+            sent=true
+        else
+            [[ "$verbose" == "true" ]] && echo -e "  ${R}✗ Server酱 通知失败${NC}"
         fi
     fi
 

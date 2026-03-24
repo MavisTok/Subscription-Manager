@@ -163,11 +163,13 @@ GitHub Token 需要 `repo` 权限，在 GitHub → Settings → Developer settin
 
 ### 4. 消息通知
 
-| 渠道 | 配置项 |
-| ---- | ------ |
-| Telegram | Bot Token + Chat ID |
-| Bark (iOS) | Bark Key + Server |
-| Webhook | URL + HTTP 方法 (POST/GET) |
+| 渠道 | 配置项 | 说明 |
+| ---- | ------ | ---- |
+| Telegram | Bot Token + Chat ID | 通过 @BotFather 创建 Bot |
+| Bark (iOS) | Bark Key + Server | iOS 推送，App Store 下载 Bark |
+| Webhook | URL + HTTP 方法 | 企业微信/钉钉/飞书等 |
+| PushPlus | Token | 微信公众号推送，[pushplus.plus](https://www.pushplus.plus) |
+| Server酱 | SendKey | 微信推送，[sct.ftqq.com](https://sct.ftqq.com)，自动适配 SC3/SCT |
 
 触发时机：拉取成功 / 拉取失败 / 推送成功 / 推送失败
 

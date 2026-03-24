@@ -186,11 +186,13 @@ _enc_migrate_configs() {
         done
     fi
 
-    # notify.json: 五个敏感字段
+    # notify.json: 敏感字段
     if [[ -f "$NOTIFY_FILE" ]]; then
         local fields=(".providers.telegram.token" ".providers.telegram.chat_id"
                       ".providers.bark.key"        ".providers.bark.server"
-                      ".providers.webhook.url")
+                      ".providers.webhook.url"
+                      ".providers.pushplus.token"
+                      ".providers.serverchan.sendkey")
         for jq_path in "${fields[@]}"; do
             val=$(jq -r "${jq_path} // \"\"" "$NOTIFY_FILE" 2>/dev/null)
             if [[ -n "$val" && "$val" != "null" && "${val:0:4}" != "enc:" ]]; then

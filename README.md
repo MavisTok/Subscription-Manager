@@ -32,13 +32,16 @@ bash <(curl -fsSL --connect-timeout 8 --max-time 30 https://raw.githubuserconten
 
 **Windows（PowerShell）：**
 
-> PowerShell 不支持 `<(...)` 进程替换且可能找不到 bash，请用以下命令：
-
 ```powershell
-& "C:\Program Files\Git\bin\bash.exe" -c 'bash <(curl -fsSL --connect-timeout 8 --max-time 30 https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/install.sh)'
+# 先查找 bash.exe 路径（运行一次即可）
+Get-Command bash -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+# 如果上面有输出，直接运行：
+bash -c 'bash <(curl -fsSL --connect-timeout 8 --max-time 30 https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/install.sh)'
+# 如果提示找不到 bash，用完整路径（把路径替换为你的 Git 安装位置）：
+& "D:\Git\bin\bash.exe" -c 'bash <(curl -fsSL --connect-timeout 8 --max-time 30 https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main/install.sh)'
 ```
 
-> 如果 Git 安装路径不同，请替换为实际路径。也可以直接打开 **Git Bash** 终端运行上方 Git Bash 命令。
+> 也可以直接打开 **Git Bash** 终端运行上方 Git Bash 命令。
 > 安装时自动通过 **Task Scheduler** 配置每分钟定时检查（开机自启）。
 
 **OpenWrt：**
@@ -385,3 +388,46 @@ sub-manager.sh --check-update   # 检查是否有新版本
 sub-manager.sh --status         # 显示状态摘要
 sub-manager.sh --bot            # 启动 Telegram Bot（前台）
 ```
+
+---
+
+## 常见问题
+
+### PowerShell 报错 `无法将"bash"项识别为 cmdlet`
+
+原因：Git 的 `bin` 目录不在系统 PATH 中，PowerShell 找不到 `bash.exe`。
+
+**解决方法（任选一种）：**
+
+1. **直接打开 Git Bash 终端**（推荐）：在开始菜单搜索 `Git Bash` 打开，然后运行安装命令。
+
+2. **在 PowerShell 中用完整路径**：先找到 bash.exe 的位置：
+
+   ```powershell
+   # 方法一：通过 git 位置推断
+   (Get-Command git).Source -replace '\\cmd\\git\.exe$', '\bin\bash.exe'
+   # 方法二：全盘搜索（较慢）
+   Get-ChildItem -Path C:\,D:\ -Filter bash.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+   ```
+
+   找到路径后用 `&` 调用：
+
+   ```powershell
+   & "D:\Git\bin\bash.exe" -c 'bash <(curl -fsSL ... install.sh)'
+   ```
+
+3. **将 Git 的 bin 目录加入 PATH**（一劳永逸）：
+
+   ```powershell
+   # 查看当前 Git 安装位置
+   (Get-Command git).Source
+   # 假设输出 D:\Git\cmd\git.exe，则将 D:\Git\bin 加入系统 PATH：
+   # 设置 → 系统 → 高级系统设置 → 环境变量 → Path → 新建 → 添加 D:\Git\bin
+   # 重启 PowerShell 后 bash 命令即可直接使用
+   ```
+
+### PowerShell 报错 `"<"运算符是为将来使用而保留的`
+
+原因：`bash <(...)` 是 Bash 的进程替换语法，PowerShell 不支持。
+
+**解决方法：** 使用 `bash -c '...'` 包裹整个命令，或直接打开 Git Bash 终端运行。

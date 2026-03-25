@@ -5,6 +5,20 @@
 # ══════════════════════════════════════════════════════════
 
 cron_check() {
+    # ── 并发锁：防止多个 cron_check 同时运行 ──────────────────
+    local lock_file="${DATA_DIR}/.cron.lock"
+    if [[ -f "$lock_file" ]]; then
+        local lock_pid; lock_pid=$(cat "$lock_file" 2>/dev/null)
+        # 检查持锁进程是否仍在运行（防止死锁）
+        if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
+            log "INFO" "cron_check skipped: another instance running (pid=$lock_pid)"
+            return 0
+        fi
+        # 进程已不在，清理残留锁
+        rm -f "$lock_file"
+    fi
+    echo "$$" > "$lock_file"
+
     local now; now=$(date +%s)
 
     # ── 拉取任务调度 ──────────────────────────────────────────
@@ -41,6 +55,9 @@ cron_check() {
             done
         fi
     done <<< "$repo_list"
+
+    # 释放并发锁
+    rm -f "$lock_file"
 }
 
 # ── Windows 调度变量（setup_cron/remove_cron 等都依赖这些）──

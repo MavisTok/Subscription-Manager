@@ -275,9 +275,28 @@ run_task() {
        "$TASKS_FILE" > "$_tmpj" && mv "$_tmpj" "$TASKS_FILE"
 
     # 通知状态标记文件（独立于 tasks.json，避免 jq 读写竞争）
+    # 格式: "state:unix_timestamp"  (e.g. "ok:1711234567")
     local notify_flag="${DATA_DIR}/.notify_${task_id}"
-    local last_notify=""
-    [[ -f "$notify_flag" ]] && last_notify=$(cat "$notify_flag" 2>/dev/null)
+    local last_notify_state="" last_notify_time=0
+    if [[ -f "$notify_flag" ]]; then
+        local _flag_raw; _flag_raw=$(cat "$notify_flag" 2>/dev/null)
+        case "$_flag_raw" in
+            *:*) last_notify_state="${_flag_raw%%:*}"
+                 last_notify_time="${_flag_raw##*:}" ;;
+            *)   last_notify_state="$_flag_raw"      # 兼容旧格式（无时间戳）
+                 last_notify_time=0 ;;
+        esac
+    fi
+    # 首次运行视为正常态，成功时不发通知
+    [[ -z "$last_notify_state" ]] && last_notify_state="ok"
+
+    # 获取任务间隔，用于计算通知冷却期
+    local task_interval; task_interval=$(jq -r --argjson id "$task_id" \
+        '.tasks[] | select(.id==$id) | .interval' "$TASKS_FILE" 2>/dev/null)
+    [[ -z "$task_interval" || "$task_interval" == "null" ]] && task_interval=60
+    # 通知冷却期 = max(interval × 3, 30) 分钟，防止振荡时频繁推送
+    local cooldown_secs=$(( task_interval * 3 * 60 ))
+    [[ "$cooldown_secs" -lt 1800 ]] && cooldown_secs=1800  # 最少 30 分钟
 
     # ── 步骤 1: 拉取订阅 ────────────────────────────────────
     local fetch_ok=false
@@ -292,9 +311,11 @@ run_task() {
             [[ "$verbose" == "true" ]] && \
                 echo -e "  ${R}✗ 拉取失败且无本地缓存，终止流程${NC}"
             log "ERROR" "Fetch failed, no local cache: task=$task_id"
-            if [[ "$last_notify" != "fail_nocache" ]]; then
+            local _nc_elapsed=$(( _now - last_notify_time ))
+            if [[ "$last_notify_state" != "fail_nocache" ]] && \
+               [[ "$_nc_elapsed" -ge "$cooldown_secs" || "$last_notify_time" -eq 0 ]]; then
                 send_notification "拉取失败" "任务「${task_name}」拉取失败且无本地缓存" 2>/dev/null || true
-                echo "fail_nocache" > "$notify_flag"
+                echo "fail_nocache:${_now}" > "$notify_flag"
             fi
             return 1
         fi
@@ -311,20 +332,32 @@ run_task() {
         push_to_github "$rid" "$task_id" "$verbose" || true
     done <<< "$repo_ids"
 
-    # ── 步骤 3: 发送通知（仅在状态变化时发送）─────────────────
-    # ok=拉取成功  fail_cache=失败用缓存  fail_nocache=失败无缓存
-    # 状态不变则跳过，状态切换才通知一次
+    # ── 步骤 3: 智能通知（防振荡 + 冷却期）─────────────────
+    # 通知策略:
+    #   - ok→ok:            不通知（常规成功无需打扰）
+    #   - fail→ok:          通知「已恢复」（需在冷却期外）
+    #   - ok→fail:          通知「失败」（需在冷却期外）
+    #   - fail→fail:        不通知（持续故障不重复推送）
+    #   - 首次成功:         不通知（正常状态无需告知）
+    #   - 冷却期内状态振荡: 不通知（防止时好时坏频繁推送）
     local notify_tag
     [[ "$fetch_ok" == "true" ]] && notify_tag="ok" || notify_tag="fail_cache"
 
-    if [[ "$notify_tag" != "$last_notify" ]]; then
-        if [[ "$fetch_ok" == "true" ]]; then
-            send_notification "拉取成功" "任务「${task_name}」订阅已更新" 2>/dev/null || true
+    if [[ "$notify_tag" != "$last_notify_state" ]]; then
+        local since_last=$(( _now - last_notify_time ))
+        if [[ "$since_last" -ge "$cooldown_secs" || "$last_notify_time" -eq 0 ]]; then
+            if [[ "$fetch_ok" == "true" ]]; then
+                # 从故障中恢复
+                send_notification "拉取恢复" \
+                    "任务「${task_name}」订阅已恢复正常更新" 2>/dev/null || true
+            else
+                send_notification "拉取失败(缓存推送)" \
+                    "任务「${task_name}」拉取失败，已用本地缓存推送至 GitHub" 2>/dev/null || true
+            fi
+            echo "${notify_tag}:${_now}" > "$notify_flag"
         else
-            send_notification "拉取失败(缓存推送)" \
-                "任务「${task_name}」拉取失败，已用本地缓存推送至 GitHub" 2>/dev/null || true
+            log "INFO" "Notification suppressed (cooldown): task=$task_id tag=$notify_tag elapsed=${since_last}s < ${cooldown_secs}s"
         fi
-        echo "$notify_tag" > "$notify_flag"
     else
         log "INFO" "Notification skipped (same status): task=$task_id status=$notify_tag"
     fi

@@ -274,6 +274,10 @@ run_task() {
        '(.tasks[] | select(.id==$id)) |= . + {"last_run":$ts}' \
        "$TASKS_FILE" > "$_tmpj" && mv "$_tmpj" "$TASKS_FILE"
 
+    # 记录拉取前的内容哈希，用于判断内容是否变化
+    local old_hash=""
+    [[ -f "$local_file" ]] && old_hash=$(cksum "$local_file" 2>/dev/null | cut -d' ' -f1)
+
     # ── 步骤 1: 拉取订阅 ────────────────────────────────────
     local fetch_ok=false
     if fetch_task "$task_id" "$verbose"; then
@@ -303,9 +307,16 @@ run_task() {
         push_to_github "$rid" "$task_id" "$verbose" || true
     done <<< "$repo_ids"
 
-    # ── 步骤 3: 发送通知（失败不中断流程）──────────────────
+    # ── 步骤 3: 发送通知（内容无变化时跳过）──────────────────
+    local new_hash=""
+    [[ -f "$local_file" ]] && new_hash=$(cksum "$local_file" 2>/dev/null | cut -d' ' -f1)
+
     if [[ "$fetch_ok" == "true" ]]; then
-        send_notification "拉取成功" "任务「${task_name}」订阅已更新" 2>/dev/null || true
+        if [[ "$old_hash" != "$new_hash" ]]; then
+            send_notification "拉取成功" "任务「${task_name}」订阅已更新" 2>/dev/null || true
+        else
+            log "INFO" "Content unchanged, skip notification: task=$task_id"
+        fi
     else
         send_notification "拉取失败(缓存推送)" \
             "任务「${task_name}」拉取失败，已用本地缓存推送至 GitHub" 2>/dev/null || true

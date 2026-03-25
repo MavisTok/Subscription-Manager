@@ -171,7 +171,7 @@ GitHub Token 需要 `repo` 权限，在 GitHub → Settings → Developer settin
 | PushPlus | Token | 微信公众号推送，[pushplus.plus](https://www.pushplus.plus) |
 | Server酱 | SendKey | 微信推送，[sct.ftqq.com](https://sct.ftqq.com)，自动适配 SC3/SCT |
 
-触发时机：拉取成功 / 拉取失败 / 推送成功 / 推送失败
+触发时机：订阅内容变化时（拉取成功且内容有更新） / 拉取失败
 
 ### 5. 定时调度
 

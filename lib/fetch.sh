@@ -133,11 +133,6 @@ fetch_task() {
         local size; size=$(_filesize "$tmp_file")
         if [[ "$size" -gt 0 ]]; then
             mv "$tmp_file" "$output_file"
-            local now; now=$(date +%s)
-            local tmpj; tmpj=$(mktemp)
-            jq --argjson id "$task_id" --argjson ts "$now" \
-               '(.tasks[] | select(.id==$id)) |= . + {"last_run":$ts}' \
-               "$TASKS_FILE" > "$tmpj" && mv "$tmpj" "$TASKS_FILE"
             [[ "$verbose" == "true" ]] && \
                 echo -e "  ${G}✓ 拉取成功 ($size 字节) [UA: $used_ua]${NC}" && \
                 echo -e "  ${C}  → 已保存: $output_file${NC}"
@@ -272,6 +267,12 @@ run_task() {
     local task_name; task_name=$(jq -r --argjson id "$task_id" \
         '.tasks[] | select(.id==$id) | .name' "$TASKS_FILE")
     local local_file="${DATA_DIR}/task_${task_id}.txt"
+
+    # 立即更新 last_run，防止调度器在本次失败后每分钟重复触发通知
+    local _now _tmpj; _now=$(date +%s); _tmpj=$(mktemp)
+    jq --argjson id "$task_id" --argjson ts "$_now" \
+       '(.tasks[] | select(.id==$id)) |= . + {"last_run":$ts}' \
+       "$TASKS_FILE" > "$_tmpj" && mv "$_tmpj" "$TASKS_FILE"
 
     # ── 步骤 1: 拉取订阅 ────────────────────────────────────
     local fetch_ok=false

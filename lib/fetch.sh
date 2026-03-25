@@ -275,28 +275,60 @@ run_task() {
        "$TASKS_FILE" > "$_tmpj" && mv "$_tmpj" "$TASKS_FILE"
 
     # 通知状态标记文件（独立于 tasks.json，避免 jq 读写竞争）
-    # 格式: "state:unix_timestamp"  (e.g. "ok:1711234567")
+    # 格式: "state:last_notify_ts:send_count:window_start"
+    #   e.g. "ok:1711234567:3:1711200000"
+    # 兼容旧格式: "state:timestamp" / "state"
     local notify_flag="${DATA_DIR}/.notify_${task_id}"
     local last_notify_state="" last_notify_time=0
+    local _nf_send_count=0 _nf_window_start=0
     if [[ -f "$notify_flag" ]]; then
         local _flag_raw; _flag_raw=$(cat "$notify_flag" 2>/dev/null)
-        case "$_flag_raw" in
-            *:*) last_notify_state="${_flag_raw%%:*}"
-                 last_notify_time="${_flag_raw##*:}" ;;
-            *)   last_notify_state="$_flag_raw"      # 兼容旧格式（无时间戳）
-                 last_notify_time=0 ;;
-        esac
+        # 按冒号数量区分格式
+        local _colon_cnt; _colon_cnt=$(echo "$_flag_raw" | tr -cd ':' | wc -c | tr -d ' ')
+        if [[ "$_colon_cnt" -ge 3 ]]; then
+            # 新格式: state:ts:count:window
+            IFS=':' read -r last_notify_state last_notify_time _nf_send_count _nf_window_start <<< "$_flag_raw"
+        elif [[ "$_colon_cnt" -ge 1 ]]; then
+            # v2 格式: state:ts
+            last_notify_state="${_flag_raw%%:*}"
+            last_notify_time="${_flag_raw##*:}"
+        else
+            # v1 格式: state
+            last_notify_state="$_flag_raw"
+        fi
     fi
     # 首次运行视为正常态，成功时不发通知
     [[ -z "$last_notify_state" ]] && last_notify_state="ok"
+    # 确保数值字段为整数
+    [[ "$last_notify_time" =~ ^[0-9]+$ ]] || last_notify_time=0
+    [[ "$_nf_send_count" =~ ^[0-9]+$ ]]   || _nf_send_count=0
+    [[ "$_nf_window_start" =~ ^[0-9]+$ ]]  || _nf_window_start=0
 
-    # 获取任务间隔，用于计算通知冷却期
+    # 获取任务间隔，用于计算通知冷却期和熔断阈值
     local task_interval; task_interval=$(jq -r --argjson id "$task_id" \
         '.tasks[] | select(.id==$id) | .interval' "$TASKS_FILE" 2>/dev/null)
     [[ -z "$task_interval" || "$task_interval" == "null" ]] && task_interval=60
     # 通知冷却期 = max(interval × 3, 30) 分钟，防止振荡时频繁推送
     local cooldown_secs=$(( task_interval * 3 * 60 ))
     [[ "$cooldown_secs" -lt 1800 ]] && cooldown_secs=1800  # 最少 30 分钟
+
+    # ── 熔断机制：24h 滑动窗口内通知次数上限 ───────────────
+    # 合理上限 = 24h 内最多执行次数 × 2（一次故障+一次恢复），夹在 [5, 20]
+    local _fuse_window=86400  # 24 小时
+    local _fuse_max=$(( 1440 / task_interval * 2 ))
+    [[ "$_fuse_max" -lt 5 ]]  && _fuse_max=5
+    [[ "$_fuse_max" -gt 20 ]] && _fuse_max=20
+    # 窗口过期则重置计数
+    if [[ $(( _now - _nf_window_start )) -ge "$_fuse_window" ]]; then
+        _nf_send_count=0
+        _nf_window_start="$_now"
+    fi
+    # 熔断状态标志（本次 run_task 调用内共享）
+    local _fuse_tripped=false
+    if [[ "$_nf_send_count" -ge "$_fuse_max" ]]; then
+        _fuse_tripped=true
+        log "WARN" "Notification fuse tripped: task=$task_id count=$_nf_send_count >= max=$_fuse_max in 24h"
+    fi
 
     # ── 步骤 1: 拉取订阅 ────────────────────────────────────
     local fetch_ok=false
@@ -312,10 +344,14 @@ run_task() {
                 echo -e "  ${R}✗ 拉取失败且无本地缓存，终止流程${NC}"
             log "ERROR" "Fetch failed, no local cache: task=$task_id"
             local _nc_elapsed=$(( _now - last_notify_time ))
-            if [[ "$last_notify_state" != "fail_nocache" ]] && \
+            if [[ "$_fuse_tripped" == "true" ]]; then
+                log "WARN" "Notification blocked (fuse): task=$task_id fail_nocache"
+                echo "fail_nocache:${_now}:${_nf_send_count}:${_nf_window_start}" > "$notify_flag"
+            elif [[ "$last_notify_state" != "fail_nocache" ]] && \
                [[ "$_nc_elapsed" -ge "$cooldown_secs" || "$last_notify_time" -eq 0 ]]; then
                 send_notification "拉取失败" "任务「${task_name}」拉取失败且无本地缓存" 2>/dev/null || true
-                echo "fail_nocache:${_now}" > "$notify_flag"
+                _nf_send_count=$(( _nf_send_count + 1 ))
+                echo "fail_nocache:${_now}:${_nf_send_count}:${_nf_window_start}" > "$notify_flag"
             fi
             return 1
         fi
@@ -332,7 +368,7 @@ run_task() {
         push_to_github "$rid" "$task_id" "$verbose" || true
     done <<< "$repo_ids"
 
-    # ── 步骤 3: 智能通知（防振荡 + 冷却期）─────────────────
+    # ── 步骤 3: 智能通知（防振荡 + 冷却期 + 熔断）─────────
     # 通知策略:
     #   - ok→ok:            不通知（常规成功无需打扰）
     #   - fail→ok:          通知「已恢复」（需在冷却期外）
@@ -340,27 +376,39 @@ run_task() {
     #   - fail→fail:        不通知（持续故障不重复推送）
     #   - 首次成功:         不通知（正常状态无需告知）
     #   - 冷却期内状态振荡: 不通知（防止时好时坏频繁推送）
+    #   - 熔断:             24h 内超上限后彻底停止通知
     local notify_tag
     [[ "$fetch_ok" == "true" ]] && notify_tag="ok" || notify_tag="fail_cache"
 
     if [[ "$notify_tag" != "$last_notify_state" ]]; then
-        local since_last=$(( _now - last_notify_time ))
-        if [[ "$since_last" -ge "$cooldown_secs" || "$last_notify_time" -eq 0 ]]; then
-            if [[ "$fetch_ok" == "true" ]]; then
-                # 从故障中恢复
-                send_notification "拉取恢复" \
-                    "任务「${task_name}」订阅已恢复正常更新" 2>/dev/null || true
-            else
-                send_notification "拉取失败(缓存推送)" \
-                    "任务「${task_name}」拉取失败，已用本地缓存推送至 GitHub" 2>/dev/null || true
-            fi
-            echo "${notify_tag}:${_now}" > "$notify_flag"
+        if [[ "$_fuse_tripped" == "true" ]]; then
+            # 已熔断：只更新状态，不发通知
+            echo "${notify_tag}:${_now}:${_nf_send_count}:${_nf_window_start}" > "$notify_flag"
+            log "WARN" "Notification blocked (fuse): task=$task_id tag=$notify_tag count=$_nf_send_count/$_fuse_max"
         else
-            # 冷却期内不发通知，但更新状态和时间戳：
-            #   - 更新状态：防止下次还判定为"状态变化"
-            #   - 更新时间戳：冷却期从现在重新计算，持续振荡持续静默
-            echo "${notify_tag}:${_now}" > "$notify_flag"
-            log "INFO" "Notification suppressed (cooldown): task=$task_id tag=$notify_tag elapsed=${since_last}s < ${cooldown_secs}s"
+            local since_last=$(( _now - last_notify_time ))
+            if [[ "$since_last" -ge "$cooldown_secs" || "$last_notify_time" -eq 0 ]]; then
+                # 熔断前最后一次检查：发送后是否触达上限
+                _nf_send_count=$(( _nf_send_count + 1 ))
+                if [[ "$fetch_ok" == "true" ]]; then
+                    send_notification "拉取恢复" \
+                        "任务「${task_name}」订阅已恢复正常更新" 2>/dev/null || true
+                else
+                    send_notification "拉取失败(缓存推送)" \
+                        "任务「${task_name}」拉取失败，已用本地缓存推送至 GitHub" 2>/dev/null || true
+                fi
+                # 刚好达到上限 → 发一条熔断告警
+                if [[ "$_nf_send_count" -ge "$_fuse_max" ]]; then
+                    send_notification "通知已熔断" \
+                        "任务「${task_name}」24h 内通知 ${_nf_send_count} 次已达上限 ${_fuse_max}，后续通知暂停至窗口期重置" 2>/dev/null || true
+                    log "WARN" "Notification fuse ACTIVATED: task=$task_id count=$_nf_send_count max=$_fuse_max"
+                fi
+                echo "${notify_tag}:${_now}:${_nf_send_count}:${_nf_window_start}" > "$notify_flag"
+            else
+                # 冷却期内不发通知，更新状态+时间戳，持续振荡持续静默
+                echo "${notify_tag}:${_now}:${_nf_send_count}:${_nf_window_start}" > "$notify_flag"
+                log "INFO" "Notification suppressed (cooldown): task=$task_id tag=$notify_tag elapsed=${since_last}s < ${cooldown_secs}s"
+            fi
         fi
     else
         log "INFO" "Notification skipped (same status): task=$task_id status=$notify_tag"

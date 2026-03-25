@@ -356,6 +356,10 @@ run_task() {
             fi
             echo "${notify_tag}:${_now}" > "$notify_flag"
         else
+            # 冷却期内不发通知，但更新状态和时间戳：
+            #   - 更新状态：防止下次还判定为"状态变化"
+            #   - 更新时间戳：冷却期从现在重新计算，持续振荡持续静默
+            echo "${notify_tag}:${_now}" > "$notify_flag"
             log "INFO" "Notification suppressed (cooldown): task=$task_id tag=$notify_tag elapsed=${since_last}s < ${cooldown_secs}s"
         fi
     else

@@ -5,7 +5,7 @@
 #  平台: Linux / macOS / Windows (Git Bash / WSL) / OpenWrt
 # ============================================================
 
-readonly VERSION="1.3.14"  # auto-managed by .githooks/pre-commit
+readonly VERSION="1.3.15"  # auto-managed by .githooks/pre-commit
 readonly GITHUB_RAW="https://raw.githubusercontent.com/MavisTok/Subscription-Manager/main"
 readonly GITHUB_RAW_PROXY="https://ghfast.top/${GITHUB_RAW}"
 

@@ -314,16 +314,12 @@ run_task() {
         push_to_github "$rid" "$task_id" "$verbose" || true
     done <<< "$repo_ids"
 
-    # ── 步骤 3: 发送通知（状态或内容变化时才发送）─────────────
-    local cur_hash=""
-    [[ -f "$local_file" ]] && cur_hash=$(cksum "$local_file" 2>/dev/null | cut -d' ' -f1)
-
+    # ── 步骤 3: 发送通知（仅在状态变化时发送）─────────────────
+    # 状态标签：ok / fail_cache / fail_nocache
+    # 只有状态变化（如 ok→fail_cache、fail_cache→ok）才发通知，
+    # 持续相同状态不重复推送
     local notify_tag
-    if [[ "$fetch_ok" == "true" ]]; then
-        notify_tag="ok:${cur_hash}"
-    else
-        notify_tag="fail_cache:${cur_hash}"
-    fi
+    [[ "$fetch_ok" == "true" ]] && notify_tag="ok" || notify_tag="fail_cache"
 
     if [[ "$notify_tag" != "$last_notify" ]]; then
         if [[ "$fetch_ok" == "true" ]]; then
@@ -332,13 +328,12 @@ run_task() {
             send_notification "拉取失败(缓存推送)" \
                 "任务「${task_name}」拉取失败，已用本地缓存推送至 GitHub" 2>/dev/null || true
         fi
-        # 记录本次通知状态
         _tmpj=$(mktemp)
         jq --argjson id "$task_id" --arg s "$notify_tag" \
            '(.tasks[] | select(.id==$id)) |= . + {"last_notify":$s}' \
            "$TASKS_FILE" > "$_tmpj" && mv "$_tmpj" "$TASKS_FILE"
     else
-        log "INFO" "Notification skipped (unchanged): task=$task_id tag=$notify_tag"
+        log "INFO" "Notification skipped (same status): task=$task_id status=$notify_tag"
     fi
 }
 

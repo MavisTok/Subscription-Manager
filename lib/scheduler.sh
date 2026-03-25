@@ -28,9 +28,24 @@ cron_check() {
     while IFS=$'\t' read -r task_id interval last_run; do
         [[ -z "$task_id" ]] && continue
         local interval_secs=$(( interval * 60 ))
-        local elapsed=$(( now - last_run ))
+        # 最小触发间隔 60 秒（防止 last_run 写入失败导致每分钟重复触发）
+        [[ "$interval_secs" -lt 60 ]] && interval_secs=60
+
+        # 双重时间源：tasks.json 的 last_run + 独立时间戳文件（兜底）
+        local _run_flag="${DATA_DIR}/.lastrun_${task_id}"
+        local _flag_ts=0
+        [[ -f "$_run_flag" ]] && _flag_ts=$(cat "$_run_flag" 2>/dev/null)
+        [[ "$_flag_ts" =~ ^[0-9]+$ ]] || _flag_ts=0
+
+        # 取 last_run 和 flag_ts 中较大的（更近的）
+        local effective_last="$last_run"
+        [[ "$last_run" =~ ^[0-9]+$ ]] || effective_last=0
+        [[ "$_flag_ts" -gt "$effective_last" ]] && effective_last="$_flag_ts"
+
+        local elapsed=$(( now - effective_last ))
         if [[ "$elapsed" -ge "$interval_secs" ]]; then
             log "INFO" "Cron trigger: task=$task_id (elapsed=${elapsed}s >= ${interval_secs}s)"
+            echo "$now" > "$_run_flag"
             run_task "$task_id" "false"
         fi
     done <<< "$task_list"

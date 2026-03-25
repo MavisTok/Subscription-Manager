@@ -268,11 +268,17 @@ run_task() {
         '.tasks[] | select(.id==$id) | .name' "$TASKS_FILE")
     local local_file="${DATA_DIR}/task_${task_id}.txt"
 
-    # 立即更新 last_run，防止调度器在本次失败后每分钟重复触发通知
-    local _now _tmpj; _now=$(date +%s); _tmpj=$(mktemp)
-    jq --argjson id "$task_id" --argjson ts "$_now" \
+    # 立即更新 last_run，防止调度器在本次失败后每分钟重复触发
+    local _now; _now=$(date +%s)
+    local _tmpj; _tmpj=$(mktemp)
+    if jq --argjson id "$task_id" --argjson ts "$_now" \
        '(.tasks[] | select(.id==$id)) |= . + {"last_run":$ts}' \
-       "$TASKS_FILE" > "$_tmpj" && mv "$_tmpj" "$TASKS_FILE"
+       "$TASKS_FILE" > "$_tmpj" 2>/dev/null && [[ -s "$_tmpj" ]]; then
+        mv "$_tmpj" "$TASKS_FILE"
+    else
+        rm -f "$_tmpj"
+        log "ERROR" "Failed to update last_run: task=$task_id (jq/write error)"
+    fi
 
     # 通知状态标记文件（独立于 tasks.json，避免 jq 读写竞争）
     # 格式: "state:last_notify_ts:send_count:window_start"
@@ -352,6 +358,8 @@ run_task() {
                 send_notification "拉取失败" "任务「${task_name}」拉取失败且无本地缓存" 2>/dev/null || true
                 _nf_send_count=$(( _nf_send_count + 1 ))
                 echo "fail_nocache:${_now}:${_nf_send_count}:${_nf_window_start}" > "$notify_flag"
+            else
+                log "INFO" "Notification skipped (fail_nocache dedup): task=$task_id state=$last_notify_state"
             fi
             return 1
         fi

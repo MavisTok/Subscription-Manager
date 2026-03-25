@@ -274,9 +274,10 @@ run_task() {
        '(.tasks[] | select(.id==$id)) |= . + {"last_run":$ts}' \
        "$TASKS_FILE" > "$_tmpj" && mv "$_tmpj" "$TASKS_FILE"
 
-    # 读取上次通知状态（状态+哈希），用于去重
-    local last_notify; last_notify=$(jq -r --argjson id "$task_id" \
-        '.tasks[] | select(.id==$id) | .last_notify // ""' "$TASKS_FILE")
+    # 通知状态标记文件（独立于 tasks.json，避免 jq 读写竞争）
+    local notify_flag="${DATA_DIR}/.notify_${task_id}"
+    local last_notify=""
+    [[ -f "$notify_flag" ]] && last_notify=$(cat "$notify_flag" 2>/dev/null)
 
     # ── 步骤 1: 拉取订阅 ────────────────────────────────────
     local fetch_ok=false
@@ -291,13 +292,9 @@ run_task() {
             [[ "$verbose" == "true" ]] && \
                 echo -e "  ${R}✗ 拉取失败且无本地缓存，终止流程${NC}"
             log "ERROR" "Fetch failed, no local cache: task=$task_id"
-            # 无缓存失败：仅在状态变化时通知（避免每次都发）
             if [[ "$last_notify" != "fail_nocache" ]]; then
                 send_notification "拉取失败" "任务「${task_name}」拉取失败且无本地缓存" 2>/dev/null || true
-                _tmpj=$(mktemp)
-                jq --argjson id "$task_id" --arg s "fail_nocache" \
-                   '(.tasks[] | select(.id==$id)) |= . + {"last_notify":$s}' \
-                   "$TASKS_FILE" > "$_tmpj" && mv "$_tmpj" "$TASKS_FILE"
+                echo "fail_nocache" > "$notify_flag"
             fi
             return 1
         fi
@@ -315,9 +312,8 @@ run_task() {
     done <<< "$repo_ids"
 
     # ── 步骤 3: 发送通知（仅在状态变化时发送）─────────────────
-    # 状态标签：ok / fail_cache / fail_nocache
-    # 只有状态变化（如 ok→fail_cache、fail_cache→ok）才发通知，
-    # 持续相同状态不重复推送
+    # ok=拉取成功  fail_cache=失败用缓存  fail_nocache=失败无缓存
+    # 状态不变则跳过，状态切换才通知一次
     local notify_tag
     [[ "$fetch_ok" == "true" ]] && notify_tag="ok" || notify_tag="fail_cache"
 
@@ -328,10 +324,7 @@ run_task() {
             send_notification "拉取失败(缓存推送)" \
                 "任务「${task_name}」拉取失败，已用本地缓存推送至 GitHub" 2>/dev/null || true
         fi
-        _tmpj=$(mktemp)
-        jq --argjson id "$task_id" --arg s "$notify_tag" \
-           '(.tasks[] | select(.id==$id)) |= . + {"last_notify":$s}' \
-           "$TASKS_FILE" > "$_tmpj" && mv "$_tmpj" "$TASKS_FILE"
+        echo "$notify_tag" > "$notify_flag"
     else
         log "INFO" "Notification skipped (same status): task=$task_id status=$notify_tag"
     fi

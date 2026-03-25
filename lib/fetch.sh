@@ -274,9 +274,9 @@ run_task() {
        '(.tasks[] | select(.id==$id)) |= . + {"last_run":$ts}' \
        "$TASKS_FILE" > "$_tmpj" && mv "$_tmpj" "$TASKS_FILE"
 
-    # 记录拉取前的内容哈希，用于判断内容是否变化
-    local old_hash=""
-    [[ -f "$local_file" ]] && old_hash=$(cksum "$local_file" 2>/dev/null | cut -d' ' -f1)
+    # 读取上次通知状态（状态+哈希），用于去重
+    local last_notify; last_notify=$(jq -r --argjson id "$task_id" \
+        '.tasks[] | select(.id==$id) | .last_notify // ""' "$TASKS_FILE")
 
     # ── 步骤 1: 拉取订阅 ────────────────────────────────────
     local fetch_ok=false
@@ -291,7 +291,14 @@ run_task() {
             [[ "$verbose" == "true" ]] && \
                 echo -e "  ${R}✗ 拉取失败且无本地缓存，终止流程${NC}"
             log "ERROR" "Fetch failed, no local cache: task=$task_id"
-            send_notification "拉取失败" "任务「${task_name}」拉取失败且无本地缓存" 2>/dev/null || true
+            # 无缓存失败：仅在状态变化时通知（避免每次都发）
+            if [[ "$last_notify" != "fail_nocache" ]]; then
+                send_notification "拉取失败" "任务「${task_name}」拉取失败且无本地缓存" 2>/dev/null || true
+                _tmpj=$(mktemp)
+                jq --argjson id "$task_id" --arg s "fail_nocache" \
+                   '(.tasks[] | select(.id==$id)) |= . + {"last_notify":$s}' \
+                   "$TASKS_FILE" > "$_tmpj" && mv "$_tmpj" "$TASKS_FILE"
+            fi
             return 1
         fi
     fi
@@ -307,19 +314,31 @@ run_task() {
         push_to_github "$rid" "$task_id" "$verbose" || true
     done <<< "$repo_ids"
 
-    # ── 步骤 3: 发送通知（内容无变化时跳过）──────────────────
-    local new_hash=""
-    [[ -f "$local_file" ]] && new_hash=$(cksum "$local_file" 2>/dev/null | cut -d' ' -f1)
+    # ── 步骤 3: 发送通知（状态或内容变化时才发送）─────────────
+    local cur_hash=""
+    [[ -f "$local_file" ]] && cur_hash=$(cksum "$local_file" 2>/dev/null | cut -d' ' -f1)
 
+    local notify_tag
     if [[ "$fetch_ok" == "true" ]]; then
-        if [[ "$old_hash" != "$new_hash" ]]; then
+        notify_tag="ok:${cur_hash}"
+    else
+        notify_tag="fail_cache:${cur_hash}"
+    fi
+
+    if [[ "$notify_tag" != "$last_notify" ]]; then
+        if [[ "$fetch_ok" == "true" ]]; then
             send_notification "拉取成功" "任务「${task_name}」订阅已更新" 2>/dev/null || true
         else
-            log "INFO" "Content unchanged, skip notification: task=$task_id"
+            send_notification "拉取失败(缓存推送)" \
+                "任务「${task_name}」拉取失败，已用本地缓存推送至 GitHub" 2>/dev/null || true
         fi
+        # 记录本次通知状态
+        _tmpj=$(mktemp)
+        jq --argjson id "$task_id" --arg s "$notify_tag" \
+           '(.tasks[] | select(.id==$id)) |= . + {"last_notify":$s}' \
+           "$TASKS_FILE" > "$_tmpj" && mv "$_tmpj" "$TASKS_FILE"
     else
-        send_notification "拉取失败(缓存推送)" \
-            "任务「${task_name}」拉取失败，已用本地缓存推送至 GitHub" 2>/dev/null || true
+        log "INFO" "Notification skipped (unchanged): task=$task_id tag=$notify_tag"
     fi
 }
 

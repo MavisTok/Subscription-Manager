@@ -187,6 +187,17 @@ GitHub Token 需要 `repo` 权限，在 GitHub → Settings → Developer settin
 
 可通过菜单「系统设置」随时启用 / 禁用 / 查看状态。
 
+**手动停止调度：**
+
+| 平台 | 命令 |
+| ---- | ---- |
+| Linux (systemd) | `systemctl --user disable --now sub-manager.timer` |
+| Linux (cron) / OpenWrt | `crontab -l \| grep -v sub-manager \| crontab -` |
+| macOS | `launchctl unload ~/Library/LaunchAgents/com.sub-manager.plist` |
+| Windows | `schtasks /Delete /F /TN "SubManager"` |
+
+临时终止正在运行的进程：`pkill -f "sub-manager.sh --cron-check"`
+
 ### 6. Telegram Bot 远程控制
 
 通过 Telegram Bot 远程管理订阅，无需登录服务器。支持**多客户端**部署，每个客户端设置唯一名称，通过 `@客户端名` 定向发送指令。

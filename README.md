@@ -171,6 +171,8 @@ GitHub Token 需要 `repo` 权限，在 GitHub → Settings → Developer settin
 | PushPlus | Token | 微信公众号推送，[pushplus.plus](https://www.pushplus.plus) |
 | Server酱 | SendKey | 微信推送，[sct.ftqq.com](https://sct.ftqq.com)，自动适配 SC3/SCT |
 
+**设备标识：** 多台设备部署时可在「消息推送配置 → 设备名称」中设置设备名，通知标题会自动添加 `[设备名]` 前缀以区分来源。
+
 **通知策略（防振荡）：**
 
 | 场景 | 是否通知 | 说明 |
@@ -382,6 +384,7 @@ Subscription-Manager/
 │   ├── tasks.json          # 拉取任务配置（敏感字段已加密）
 │   ├── repos.json          # GitHub 仓库配置（敏感字段已加密）
 │   ├── notify.json         # 消息推送配置（敏感字段已加密）
+│   ├── settings.json       # 系统设置（代理、设备名称等）
 │   └── webdav.json         # WebDAV 同步配置（密码已加密，按需创建）
 ├── data/
 │   └── task_<id>.txt       # 本地订阅文件

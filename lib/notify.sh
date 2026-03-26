@@ -178,25 +178,62 @@ notify_test() {
     press_enter
 }
 
+notify_device_name() {
+    clear_screen
+    print_header "设备名称配置"
+
+    local cur_name
+    cur_name=$(jq -r '.device_name // ""' "$SETTINGS_FILE" 2>/dev/null)
+    [[ "$cur_name" == "null" ]] && cur_name=""
+
+    echo -e "  设备名称会作为前缀添加到通知标题中，例如: ${Y}[我的VPS] 任务成功${NC}"
+    echo -e "  多台设备部署时用于区分通知来源"
+    echo ""
+    [[ -n "$cur_name" ]] && echo -e "  当前设备名称: ${Y}${cur_name}${NC}" || echo -e "  当前设备名称: ${Y}（未设置）${NC}"
+    echo ""
+
+    local new_name
+    new_name=$(read_input "设备名称 (留空则清除)" "$cur_name")
+    local tmp; tmp=$(mktemp)
+    jq --arg name "$new_name" '.device_name = $name' "$SETTINGS_FILE" > "$tmp" && mv "$tmp" "$SETTINGS_FILE"
+
+    if [[ -n "$new_name" ]]; then
+        echo -e "\n  ${G}✓ 设备名称已设置为: ${new_name}${NC}"
+    else
+        echo -e "\n  ${G}✓ 设备名称已清除${NC}"
+    fi
+    press_enter
+}
+
 notify_menu() {
     while true; do
         clear_screen
         print_header "消息推送配置"
         notify_show_status
+
+        local _dn
+        _dn=$(jq -r '.device_name // ""' "$SETTINGS_FILE" 2>/dev/null)
+        [[ "$_dn" == "null" ]] && _dn=""
+        if [[ -n "$_dn" ]]; then
+            echo -e "  设备名称: ${Y}${_dn}${NC}"
+        fi
+
         echo ""
         echo -e "  ${C}1.${NC} 配置 Telegram"
         echo -e "  ${C}2.${NC} 配置 Bark (iOS)"
         echo -e "  ${C}3.${NC} 配置 Webhook"
         echo -e "  ${C}4.${NC} 配置 PushPlus (微信)"
         echo -e "  ${C}5.${NC} 配置 Server酱"
-        echo -e "  ${C}6.${NC} 发送测试消息"
+        echo -e "  ${C}6.${NC} 设备名称"
+        echo -e "  ${C}7.${NC} 发送测试消息"
         echo -e "  ${C}0.${NC} 返回主菜单"
         echo ""
         local choice; choice=$(read_input "请选择")
         case "$choice" in
             1) notify_telegram ;;  2) notify_bark ;;
             3) notify_webhook ;;   4) notify_pushplus ;;
-            5) notify_serverchan ;; 6) notify_test ;;
+            5) notify_serverchan ;; 6) notify_device_name ;;
+            7) notify_test ;;
             0) return ;;
             *) echo -e "  ${R}无效选项${NC}"; sleep 1 ;;
         esac
@@ -211,6 +248,13 @@ notify_menu() {
 send_notification() {
     local title="$1" body="$2" verbose="${3:-false}"
     local sent=false
+
+    # 读取设备名称，添加前缀
+    local _dev_name
+    _dev_name=$(jq -r '.device_name // ""' "$SETTINGS_FILE" 2>/dev/null)
+    if [[ -n "$_dev_name" && "$_dev_name" != "null" ]]; then
+        title="[${_dev_name}] ${title}"
+    fi
 
     # Telegram
     local tg_enabled; tg_enabled=$(jq -r '.providers.telegram.enabled' "$NOTIFY_FILE")

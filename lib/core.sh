@@ -246,7 +246,8 @@ NOTIFYEOF
     [[ -f "$SETTINGS_FILE" ]] || cat > "$SETTINGS_FILE" << 'SETTINGSEOF'
 {
   "fetch_proxy": "",
-  "fetch_proxy_enabled": false
+  "fetch_proxy_enabled": false,
+  "device_name": ""
 }
 SETTINGSEOF
     _enc_init
